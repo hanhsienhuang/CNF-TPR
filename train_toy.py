@@ -35,7 +35,7 @@ parser.add_argument(
 parser.add_argument('--dims', type=str, default='64-64-64')
 parser.add_argument("--num_blocks", type=int, default=1, help='Number of stacked CNFs.')
 parser.add_argument('--time_length', type=float, default=0.5)
-parser.add_argument('--train_T', type=eval, default=True)
+parser.add_argument('--train_T', type=eval, default=False)
 parser.add_argument("--divergence_fn", type=str, default="brute_force", choices=["brute_force", "approximate"])
 parser.add_argument("--nonlinearity", type=str, default="tanh", choices=odefunc.NONLINEARITIES)
 
@@ -67,6 +67,11 @@ parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/d
 parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
+parser.add_argument('--acc2', type=float, default=None, help="L2 square acceleration loss")
+parser.add_argument('--acc', type=float, default=None, help="L2 acceleration loss")
+parser.add_argument('--acc_smooth', type=float, default=None, help="Smoothed L2 acceleration loss")
+parser.add_argument('--num_steps', type=int, default=None, help="Number of steps for fixed step size ode methods")
+parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 
 parser.add_argument('--save', type=str, default='experiments/cnf')
 parser.add_argument('--viz_freq', type=int, default=100)

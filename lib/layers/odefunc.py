@@ -6,14 +6,15 @@ import torch.nn.functional as F
 
 from . import diffeq_layers
 from .squeeze import squeeze, unsqueeze
+from .diffeq_layers import forward_ad
 
 __all__ = ["ODEnet", "AutoencoderDiffEqNet", "ODEfunc", "AutoencoderODEfunc"]
 
 
-def divergence_bf(dx, y, **unused_kwargs):
+def divergence_bf(dx, y, training = True, **unused_kwargs):
     sum_diag = 0.
     for i in range(y.shape[1]):
-        sum_diag += torch.autograd.grad(dx[:, i].sum(), y, create_graph=True)[0].contiguous()[:, i].contiguous()
+        sum_diag += torch.autograd.grad(dx[:, i].sum(), y, retain_graph = True, create_graph=training)[0].contiguous()[:, i].contiguous()
     return sum_diag.contiguous()
 
 
@@ -45,8 +46,8 @@ def _get_minibatch_jacobian(y, x):
     return jac
 
 
-def divergence_approx(f, y, e=None):
-    e_dzdx = torch.autograd.grad(f, y, e, create_graph=True)[0]
+def divergence_approx(f, y, e=None, training = True):
+    e_dzdx = torch.autograd.grad(f, y, e, retain_graph = True, create_graph=training)[0]
     e_dzdx_e = e_dzdx * e
     approx_tr_dzdx = e_dzdx_e.view(y.shape[0], -1).sum(dim=1)
     return approx_tr_dzdx
@@ -145,7 +146,7 @@ class ODEnet(nn.Module):
 
             layer = base_layer(hidden_shape[0], dim_out, **layer_kwargs)
             layers.append(layer)
-            activation_fns.append(NONLINEARITIES[nonlinearity])
+            activation_fns.append(forward_ad.Activation(NONLINEARITIES[nonlinearity]))
 
             hidden_shape = list(copy.copy(hidden_shape))
             hidden_shape[0] = dim_out
@@ -171,6 +172,16 @@ class ODEnet(nn.Module):
         for _ in range(self.num_squeeze):
             dx = unsqueeze(dx, 2)
         return dx
+
+    def forward_AD(self, dt_dt, dx_dt):
+        dv_dt = dx_dt
+        for l, layer in enumerate(self.layers):
+            dv_dt = layer.forward_AD(dt_dt, dv_dt)
+
+            # if not last layer, use nonlinearity
+            if l < len(self.layers) - 1:
+                dv_dt = self.activation_fns[l].forward_AD(dv_dt)
+        return dv_dt
 
 
 class AutoencoderDiffEqNet(nn.Module):
@@ -275,8 +286,8 @@ class ODEfunc(nn.Module):
         self._num_evals.fill_(0)
 
     def forward(self, t, states):
-        assert len(states) >= 2
         y = states[0]
+        need_divergence = len(states) > 1
 
         # increment num evals
         self._num_evals += 1
@@ -285,29 +296,56 @@ class ODEfunc(nn.Module):
         t = torch.tensor(t).type_as(y)
         batchsize = y.shape[0]
 
-        # Sample and fix the noise.
-        if self._e is None:
-            if self.rademacher:
-                self._e = sample_rademacher_like(y)
-            else:
-                self._e = sample_gaussian_like(y)
-
         with torch.set_grad_enabled(True):
             y.requires_grad_(True)
             t.requires_grad_(True)
             for s_ in states[2:]:
                 s_.requires_grad_(True)
-            dy = self.diffeq(t, y, *states[2:])
-            # Hack for 2D data to use brute force divergence computation.
-            if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
-                divergence = divergence_bf(dy, y).view(batchsize, 1)
-            else:
-                divergence = self.divergence_fn(dy, y, e=self._e).view(batchsize, 1)
+            dy = self.diffeq(t, y)
+            if need_divergence:
+                if self._e is None:
+                    if self.rademacher:
+                        self._e = sample_rademacher_like(y)
+                    else:
+                        self._e = sample_gaussian_like(y)
+
+                # Hack for 2D data to use brute force divergence computation.
+                if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
+                    divergence = divergence_bf(dy, y, training = self.training).view(batchsize, 1)
+                else:
+                    divergence = self.divergence_fn(dy, y, e=self._e, training = self.training).view(batchsize, 1)
         if self.residual:
             dy = dy - y
-            divergence -= torch.ones_like(divergence) * torch.tensor(np.prod(y.shape[1:]), dtype=torch.float32
+            if need_divergence:
+                divergence -= torch.ones_like(divergence) * torch.tensor(np.prod(y.shape[1:]), dtype=torch.float32
                                                                      ).to(divergence)
-        return tuple([dy, -divergence] + [torch.zeros_like(s_).requires_grad_(True) for s_ in states[2:]])
+        if not need_divergence:
+            return (dy,)
+        return (dy, -divergence)
+
+    def get_div_and_acc(self, t, y):
+        with torch.set_grad_enabled(True):
+            y.requires_grad_(True)
+            t.requires_grad_(True) 
+            dy = self.diffeq(t, y)
+            batchsize = y.shape[0]
+            if self._e is None: 
+                if self.rademacher:
+                    self._e = sample_rademacher_like(y)
+                else:
+                    self._e = sample_gaussian_like(y)
+
+            if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
+                divergence = divergence_bf(dy, y, training = self.training).view(batchsize, 1)
+            else:
+                divergence = self.divergence_fn(dy, y, e=self._e, training = self.training).view(batchsize, 1)
+
+        dt_dt = torch.tensor(1.0).to(y)
+        dx_dt = dy
+        dv_dt = self.diffeq.forward_AD(dt_dt, dx_dt)
+        acceleration = torch.sum(dv_dt**2)/y.shape[0]
+        return divergence, acceleration
+
 
 
 class AutoencoderODEfunc(nn.Module):

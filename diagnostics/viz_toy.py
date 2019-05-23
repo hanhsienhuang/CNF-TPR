@@ -82,7 +82,7 @@ def save_trajectory(model, data_samples, savedir, ntimes=101, memory=0.01, devic
                 ax.set_xlim(-4, 4)
                 ax.set_ylim(-4, 4)
                 cmap = matplotlib.cm.get_cmap(None)
-                ax.set_axis_bgcolor(cmap(0.))
+                ax.set_facecolor(cmap(0.))
                 ax.invert_yaxis()
                 ax.get_xaxis().set_ticks([])
                 ax.get_yaxis().set_ticks([])
@@ -106,17 +106,18 @@ def save_trajectory(model, data_samples, savedir, ntimes=101, memory=0.01, devic
                 K = int(K.imag)
                 zs = torch.from_numpy(np.stack([x, y], -1).reshape(K * K, 2)).to(device, torch.float32)
                 logps = torch.zeros(zs.shape[0], 1).to(device, torch.float32)
-                dydt = cnf.odefunc(integration_times[t], (zs, logps))[0]
+                dydt = cnf.odefunc(integration_times[-t-1], (zs, logps))[0]
                 dydt = -dydt.cpu().detach().numpy()
                 dydt = dydt.reshape(K, K, 2)
 
                 logmag = 2 * np.log(np.hypot(dydt[:, :, 0], dydt[:, :, 1]))
                 ax.quiver(
                     x, y, dydt[:, :, 0], dydt[:, :, 1],
-                    np.exp(logmag), cmap="coolwarm", scale=20., width=0.015, pivot="mid"
+                    np.exp(logmag), cmap="coolwarm", scale=20., width=0.015, pivot="tail", angles="xy"
                 )
                 ax.set_xlim(-4, 4)
                 ax.set_ylim(-4, 4)
+                ax.invert_yaxis()
                 ax.axis("off")
                 ax.set_title("Vector Field", fontsize=32)
 

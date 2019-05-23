@@ -14,9 +14,8 @@ def plot_reconstructions(data, recon_mean, loss, loss_type, epoch, args):
         # Find largest class logit
         tmp = recon_mean.view(-1, num_classes, *args.input_size).max(dim=1)[1]
         recon_mean = tmp.float() / (num_classes - 1.)
-    if epoch == 1:
-        if not os.path.exists(args.snap_dir + 'reconstruction/'):
-            os.makedirs(args.snap_dir + 'reconstruction/')
+    if not os.path.exists(args.snap_dir + 'reconstruction/'):
+        os.makedirs(args.snap_dir + 'reconstruction/')
         # VISUALIZATION: plot real images
         plot_images(args, data.data.cpu().numpy()[0:9], args.snap_dir + 'reconstruction/', 'real', size_x=3, size_y=3)
     # VISUALIZATION: plot reconstructions

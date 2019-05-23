@@ -59,8 +59,8 @@ def count_nfe(model):
             self.num_evals = 0
 
         def __call__(self, module):
-            if isinstance(module, layers.CNF):
-                self.num_evals += module.num_evals()
+            if isinstance(module, layers.ODEfunc):
+                self.num_evals += module._num_evals.item()
 
     accumulator = AccNumEvals()
     model.apply(accumulator)
@@ -121,6 +121,9 @@ REGULARIZATION_FNS = {
     "JFrobint": reg_lib.jacobian_frobenius_regularization_fn,
     "JdiagFrobint": reg_lib.jacobian_diag_frobenius_regularization_fn,
     "JoffdiagFrobint": reg_lib.jacobian_offdiag_frobenius_regularization_fn,
+    "acc2": reg_lib.acceleration_l2_square_fn,
+    "acc": reg_lib.acceleration_l2_fn,
+    "acc_smooth": reg_lib.acceleration_l2_smooth_fn,
 }
 
 INV_REGULARIZATION_FNS = {v: k for k, v in six.iteritems(REGULARIZATION_FNS)}
@@ -136,8 +139,11 @@ def create_regularization_fns(args):
     regularization_fns = []
     regularization_coeffs = []
 
+    if sum([args.acc is not None, args.acc2 is not None, args.acc_smooth is not None]) > 1:
+        raise Exception("More than one types of acceleration loss")
+
     for arg_key, reg_fn in six.iteritems(REGULARIZATION_FNS):
-        if getattr(args, arg_key) is not None:
+        if hasattr(args, arg_key) and getattr(args, arg_key) is not None:
             regularization_fns.append(reg_fn)
             regularization_coeffs.append(eval("args." + arg_key))
 
@@ -180,8 +186,9 @@ def build_model_tabular(args, dims, regularization_fns=None):
             odefunc=odefunc,
             T=args.time_length,
             train_T=args.train_T,
-            regularization_fns=regularization_fns,
             solver=args.solver,
+            num_steps=args.num_steps,
+            adjoint=args.adjoint,
         )
         return cnf
 

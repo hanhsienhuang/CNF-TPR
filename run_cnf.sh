@@ -1,0 +1,2 @@
+python train_cnf.py --data mnist   --dims 64,64,64 --strides 1,1,1,1 --num_blocks 2 --layer_type concat --multiscale True --rademacher True --save experiments/mnist   --acc_smooth 0.01 --solver rk4 --num_steps 4 --test_solver dopri5 --adjoint --nonlinearity tanh 
+python train_cnf.py --data cifar10 --dims 64,64,64 --strides 1,1,1,1 --num_blocks 2 --layer_type concat --multiscale True --rademacher True --save experiments/cifar10 --acc_smooth 0.01 --solver rk4 --num_steps 6 --test_solver dopri5 --adjoint --nonlinearity tanh 

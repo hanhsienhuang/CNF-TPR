@@ -40,11 +40,10 @@ def binary_loss_function(recon_x, x, z_mu, z_var, z_0, z_k, ldj, beta=1.):
 
     # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
     kl = (summed_logs - summed_ldj)
-    loss = bce + beta * kl
-
-    loss /= float(batch_size)
     bce /= float(batch_size)
     kl /= float(batch_size)
+    loss = bce + beta * kl
+
 
     return loss, bce, kl
 
@@ -88,11 +87,10 @@ def multinomial_loss_function(x_logit, x, z_mu, z_var, z_0, z_k, ldj, args, beta
 
     # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
     kl = (summed_logs - summed_ldj)
-    loss = ce + beta * kl
-
-    loss /= float(batch_size)
     ce /= float(batch_size)
     kl /= float(batch_size)
+    loss = ce + beta * kl
+
 
     return loss, ce, kl
 
@@ -246,7 +244,7 @@ def calculate_loss(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args, beta=1.):
 
     elif args.input_type == 'multinomial':
         loss, rec, kl = multinomial_loss_function(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args, beta=beta)
-        bpd = loss.data[0] / (np.prod(args.input_size) * np.log(2.))
+        bpd = loss.item() / (np.prod(args.input_size) * np.log(2.))
 
     else:
         raise ValueError('Invalid input type for calculate loss: %s.' % args.input_type)

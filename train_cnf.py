@@ -49,7 +49,7 @@ parser.add_argument('--test_rtol', type=float, default=None)
 parser.add_argument("--imagesize", type=int, default=None)
 parser.add_argument("--alpha", type=float, default=1e-6)
 parser.add_argument('--time_length', type=float, default=1.0)
-parser.add_argument('--train_T', type=eval, default=True)
+parser.add_argument('--train_T', type=eval, default=False)
 
 parser.add_argument("--num_epochs", type=int, default=1000)
 parser.add_argument("--batch_size", type=int, default=200)
@@ -79,6 +79,12 @@ parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx|
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
 
+parser.add_argument('--acc2', type=float, default=None, help="L2 square acceleration loss")
+parser.add_argument('--acc', type=float, default=None, help="L2 acceleration loss")
+parser.add_argument('--acc_smooth', type=float, default=None, help="Smoothed L2 acceleration loss")
+parser.add_argument('--num_steps', type=int, default=None, help="Number of steps for fixed step size ode methods")
+parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
+
 parser.add_argument("--time_penalty", type=float, default=0, help="Regularization on the end_time.")
 parser.add_argument(
     "--max_grad_norm", type=float, default=1e10,
@@ -90,6 +96,7 @@ parser.add_argument("--resume", type=str, default=None)
 parser.add_argument("--save", type=str, default="experiments/cnf")
 parser.add_argument("--val_freq", type=int, default=1)
 parser.add_argument("--log_freq", type=int, default=10)
+parser.add_argument("--evaluate", action= "store_true")
 
 args = parser.parse_args()
 
@@ -115,9 +122,14 @@ def add_noise(x):
     return x
 
 
-def update_lr(optimizer, itr):
+def update_lr(optimizer, itr, epoch):
     iter_frac = min(float(itr + 1) / max(args.warmup_iters, 1), 1.0)
     lr = args.lr * iter_frac
+    if epoch > 200:
+        args.evaluate=True
+        lr = 0
+    elif epoch > 10:
+        lr = args.lr/10
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
@@ -241,7 +253,7 @@ def create_model(args, data_shape, regularization_fns):
             intermediate_dims=hidden_dims,
             nonlinearity=args.nonlinearity,
             alpha=args.alpha,
-            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "regularization_fns": regularization_fns},
+            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "regularization_fns": regularization_fns, "num_steps": args.num_steps, "adjoint": args.adjoint},
         )
     elif args.parallel:
         model = multiscale_parallel.MultiscaleParallelCNF(
@@ -299,6 +311,8 @@ def create_model(args, data_shape, regularization_fns):
                     train_T=args.train_T,
                     regularization_fns=regularization_fns,
                     solver=args.solver,
+                    num_steps=args.num_steps,
+                    adjoint=args.adjoint,
                 )
                 return cnf
 
@@ -363,53 +377,54 @@ if __name__ == "__main__":
     for epoch in range(args.begin_epoch, args.num_epochs + 1):
         model.train()
         train_loader = get_train_loader(train_set, epoch)
-        for _, (x, y) in enumerate(train_loader):
-            start = time.time()
-            update_lr(optimizer, itr)
-            optimizer.zero_grad()
+        if not args.evaluate:
+            for _, (x, y) in enumerate(train_loader):
+                start = time.time()
+                update_lr(optimizer, itr, epoch)
+                optimizer.zero_grad()
 
-            if not args.conv:
-                x = x.view(x.shape[0], -1)
+                if not args.conv:
+                    x = x.view(x.shape[0], -1)
 
-            # cast data and move to device
-            x = cvt(x)
-            # compute loss
-            loss = compute_bits_per_dim(x, model)
-            if regularization_coeffs:
-                reg_states = get_regularization(model, regularization_coeffs)
-                reg_loss = sum(
-                    reg_state * coeff for reg_state, coeff in zip(reg_states, regularization_coeffs) if coeff != 0
-                )
-                loss = loss + reg_loss
-            total_time = count_total_time(model)
-            loss = loss + total_time * args.time_penalty
-
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-
-            optimizer.step()
-
-            if args.spectral_norm: spectral_norm_power_iteration(model, args.spectral_norm_niter)
-
-            time_meter.update(time.time() - start)
-            loss_meter.update(loss.item())
-            steps_meter.update(count_nfe(model))
-            grad_meter.update(grad_norm)
-            tt_meter.update(total_time)
-
-            if itr % args.log_freq == 0:
-                log_message = (
-                    "Iter {:04d} | Time {:.4f}({:.4f}) | Bit/dim {:.4f}({:.4f}) | "
-                    "Steps {:.0f}({:.2f}) | Grad Norm {:.4f}({:.4f}) | Total Time {:.2f}({:.2f})".format(
-                        itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg, steps_meter.val,
-                        steps_meter.avg, grad_meter.val, grad_meter.avg, tt_meter.val, tt_meter.avg
-                    )
-                )
+                # cast data and move to device
+                x = cvt(x)
+                # compute loss
+                loss = compute_bits_per_dim(x, model)
                 if regularization_coeffs:
-                    log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
-                logger.info(log_message)
+                    reg_states = get_regularization(model, regularization_coeffs)
+                    reg_loss = sum(
+                        reg_state * coeff for reg_state, coeff in zip(reg_states, regularization_coeffs) if coeff != 0
+                    )
+                    loss = loss + reg_loss
+                total_time = count_total_time(model)
+                loss = loss + total_time * args.time_penalty
 
-            itr += 1
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+
+                optimizer.step()
+
+                if args.spectral_norm: spectral_norm_power_iteration(model, args.spectral_norm_niter)
+
+                time_meter.update(time.time() - start)
+                loss_meter.update(loss.item())
+                steps_meter.update(count_nfe(model))
+                grad_meter.update(grad_norm)
+                tt_meter.update(total_time)
+
+                if itr % args.log_freq == 0:
+                    log_message = (
+                        "Iter {:04d} | Time {:.4f}({:.4f}) | Bit/dim {:.4f}({:.4f}) | "
+                        "Steps {:.0f}({:.2f}) | Grad Norm {:.4f}({:.4f}) | Total Time {:.2f}({:.2f})".format(
+                            itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg, steps_meter.val,
+                            steps_meter.avg, grad_meter.val, grad_meter.avg, tt_meter.val, tt_meter.avg
+                        )
+                    )
+                    if regularization_coeffs:
+                        log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
+                    logger.info(log_message)
+
+                itr += 1
 
         # compute test loss
         model.eval()
@@ -423,12 +438,13 @@ if __name__ == "__main__":
                         x = x.view(x.shape[0], -1)
                     x = cvt(x)
                     loss = compute_bits_per_dim(x, model)
-                    losses.append(loss)
+                    losses.append(loss.item())
 
                 loss = np.mean(losses)
                 logger.info("Epoch {:04d} | Time {:.4f}, Bit/dim {:.4f}".format(epoch, time.time() - start, loss))
-                if loss < best_loss:
-                    best_loss = loss
+                #if loss < best_loss:
+                #    best_loss = loss
+                if not args.evaluate:
                     utils.makedirs(args.save)
                     torch.save({
                         "args": args,

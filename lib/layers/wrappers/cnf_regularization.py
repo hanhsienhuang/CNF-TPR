@@ -21,6 +21,7 @@ class RegularizedODEfunc(nn.Module):
             logp.requires_grad_(True)
             dstate = self.odefunc(t, (x, logp))
             if len(state) > 2:
+                SharedContext.odefunc = self.odefunc
                 dx, dlogp = dstate[:2]
                 reg_states = tuple(reg_fn(x, logp, dx, dlogp, SharedContext) for reg_fn in self.regularization_fns)
                 return dstate + reg_states
@@ -86,6 +87,17 @@ def jacobian_offdiag_frobenius_regularization_fn(x, logp, dx, dlogp, context):
     ms_offdiag = ss_offdiag / (diagonal.shape[1] * (diagonal.shape[1] - 1))
     return torch.mean(ms_offdiag)
 
+def acceleration_l2_square_fn(x, logp, dx, dlogp, context):
+    dv_dt = context.odefunc.forward_AD(torch.tensor(1).to(dx), dx)
+    return torch.sum(dv_dt**2) / dx.shape[0]
+
+def acceleration_l2_fn(x, logp, dx, dlogp, context):
+    dv_dt = context.odefunc.forward_AD(torch.tensor(1).to(dx), dx)
+    return torch.mean(torch.norm(dv_dt, dim = tuple(range(1, len(dv_dt.shape)))))
+
+def acceleration_l2_smooth_fn(x, logp, dx, dlogp, context):
+    dv_dt = context.odefunc.forward_AD(torch.tensor(1).to(dx), dx)
+    return torch.mean(torch.sqrt(1 + torch.sum(dv_dt**2, dim = tuple(range(1, len(dv_dt.shape))))) ) -1
 
 def _get_minibatch_jacobian(y, x, create_graph=False):
     """Computes the Jacobian of y wrt x assuming minibatch-mode.

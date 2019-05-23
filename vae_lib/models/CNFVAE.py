@@ -4,10 +4,44 @@ from train_misc import build_model_tabular
 import lib.layers as layers
 from .VAE import VAE
 import lib.layers.diffeq_layers as diffeq_layers
+from lib.layers.diffeq_layers import forward_ad
 from lib.layers.odefunc import NONLINEARITIES
+from lib.layers.cnf import sample_unique
+from train_misc import create_regularization_fns
 
 from torchdiffeq import odeint_adjoint as odeint
 
+class ODEfuncWrapper(nn.Module):
+    def __init__(self, odefunc, regularization_fns):
+        super().__init__()
+        self.odefunc = odefunc
+        self.regularization_fns = regularization_fns
+
+    def before_odeint(self, nreg):
+        self.nreg = nreg
+        self.odefunc.before_odeint()
+
+    def forward(self, t, state):
+        class SharedContext(object):
+            pass
+
+        state = state[self.nreg:]
+        with torch.enable_grad():
+            x, logp = state[:2]
+            x.requires_grad_(True)
+            logp.requires_grad_(True)
+            dstate = self.odefunc(t, state)
+            if self.nreg > 0:
+                SharedContext.odefunc = self.odefunc
+                dx, dlogp = dstate[:2]
+                reg_states = tuple(reg_fn(x, logp, dx, dlogp, SharedContext) for reg_fn in self.regularization_fns)
+                return reg_states + dstate 
+            else:
+                return dstate
+
+    @property
+    def _num_evals(self):
+        return self.odefunc._num_evals
 
 def get_hidden_dims(args):
     return tuple(map(int, args.dims.split("-"))) + (args.z_size,)
@@ -128,7 +162,7 @@ class AmortizedLowRankODEnet(nn.Module):
         for dim_out in hidden_dims:
             layer = base_layer(hidden_shape, dim_out)
             layers.append(layer)
-            activation_fns.append(NONLINEARITIES[nonlinearity])
+            activation_fns.append(forward_ad.Activation(NONLINEARITIES[nonlinearity]))
             hidden_shape = dim_out
 
         self.layers = nn.ModuleList(layers)
@@ -139,24 +173,43 @@ class AmortizedLowRankODEnet(nn.Module):
         return [params]
 
     def _rank_k_bmm(self, x, u, v):
-        xu = torch.bmm(x[:, None], u.view(x.shape[0], x.shape[-1], self.rank))
-        xuv = torch.bmm(xu, v.view(x.shape[0], self.rank, -1))
+        xu = torch.bmm(x[:, None], u)
+        xuv = torch.bmm(xu, v)
         return xuv[:, 0]
 
-    def forward(self, t, y, am_params):
-        dx = y
-        for l, (layer, in_dim, out_dim) in enumerate(zip(self.layers, self.input_dims, self.output_dims)):
+    def _prepare_params(self, am_params):
+        self.am_params = []
+        for in_dim, out_dim in zip(self.input_dims, self.output_dims):
             this_u, am_params = am_params[:, :in_dim * self.rank], am_params[:, in_dim * self.rank:]
             this_v, am_params = am_params[:, :out_dim * self.rank], am_params[:, out_dim * self.rank:]
             this_bias, am_params = am_params[:, :out_dim], am_params[:, out_dim:]
+            this_u = this_u.view(-1, in_dim, self.rank)
+            this_v = this_v.view(-1, self.rank, out_dim)
+            self.am_params.append( (this_u, this_v, this_bias))
 
+    def forward(self, t, y, am_params):
+        dx = y
+        self._prepare_params(am_params)
+        for l, (layer, (u,v,bias)) in enumerate(zip(self.layers, self.am_params)):
             xw = layer(t, dx)
-            xw_am = self._rank_k_bmm(dx, this_u, this_v)
-            dx = xw + xw_am + this_bias
+            xw_am = self._rank_k_bmm(dx, u, v)
+            dx = xw + xw_am + bias
             # if not last layer, use nonlinearity
             if l < len(self.layers) - 1:
                 dx = self.activation_fns[l](dx)
         return dx
+
+    def forward_AD(self, dt_dt, dy_dt):
+        dv_dt = dy_dt
+        for l, (layer, (u,v,bias)) in enumerate(zip(self.layers, self.am_params)):
+            dvw = layer.forward_AD(dt_dt, dv_dt)
+            dvw_am = self._rank_k_bmm(dv_dt, u, v)
+            dv_dt = dvw + dvw_am 
+            # if not last layer, use nonlinearity
+            if l < len(self.layers) - 1:
+                dv_dt = self.activation_fns[l].forward_AD(dv_dt)
+        self.am_params = None
+        return dv_dt
 
 
 class HyperODEnet(nn.Module):
@@ -315,20 +368,26 @@ class AmortizedCNFVAE(VAE):
         super(AmortizedCNFVAE, self).__init__(args)
 
         # CNF model
-        self.odefuncs = nn.ModuleList([
+        odefuncs = [
             construct_amortized_odefunc(args, args.z_size, self.amortization_type) for _ in range(args.num_blocks)
-        ])
+        ]
         self.q_am = self._amortized_layers(args)
         assert len(self.q_am) == args.num_blocks or len(self.q_am) == 0
 
         if args.cuda:
             self.cuda()
-
-        self.register_buffer('integration_times', torch.tensor([0.0, args.time_length]))
+        self.time_length = args.time_length
 
         self.atol = args.atol
         self.rtol = args.rtol
         self.solver = args.solver
+        self.test_solver = args.test_solver if args.test_solver is not None else args.solver
+        self.num_steps = args.num_steps
+
+        regularization_fns, regularization_coeffs = create_regularization_fns(args)
+        self.wrapped_funcs  = nn.ModuleList([ODEfuncWrapper(odefunc, regularization_fns) for odefunc in odefuncs])
+        self.regularization_coeffs = regularization_coeffs
+        self.nreg = len(regularization_coeffs)
 
     def encode(self, x):
         """
@@ -352,24 +411,38 @@ class AmortizedCNFVAE(VAE):
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
 
+        if self.training and self.num_steps is not None:
+            integration_times = sample_unique(self.num_steps).to(x) * self.time_length
+        else:
+            integration_times = torch.tensor([0.0, self.time_length]).to(x)
+        solver = self.solver if self.training else self.test_solver
+
         delta_logp = torch.zeros(x.shape[0], 1).to(x)
+        if self.training:
+            reg_states = tuple(torch.tensor(0).to(x) for _ in range(self.nreg))
+        else:
+            reg_states = ()
         z = z0
-        for odefunc, am_param in zip(self.odefuncs, am_params):
-            am_param_unpacked = odefunc.diffeq._unpack_params(am_param)
-            odefunc.before_odeint()
+        states = reg_states + (z, delta_logp) 
+        nreg = len(reg_states)
+        for wrapped_func, am_param in zip(self.wrapped_funcs, am_params):
+            am_param_unpacked = wrapped_func.odefunc.diffeq._unpack_params(am_param)
+            wrapped_func.before_odeint(nreg)
             states = odeint(
-                odefunc,
-                (z, delta_logp) + tuple(am_param_unpacked),
-                self.integration_times.to(z),
+                wrapped_func,
+                states + tuple(am_param_unpacked),
+                integration_times,
                 atol=self.atol,
                 rtol=self.rtol,
-                method=self.solver,
+                method=solver,
             )
-            z, delta_logp = states[0][-1], states[1][-1]
+            states = tuple(state[-1] for state in states[:nreg+2])
 
+        reg_states, (z, delta_logp) = states[:nreg], states[nreg:]
         x_mean = self.decode(z)
 
-        return x_mean, z_mu, z_var, -delta_logp.view(-1), z0, z
+        reg_loss = sum([reg*coef for reg, coef in zip(reg_states, self.regularization_coeffs)], torch.tensor(0).to(z))
+        return x_mean, z_mu, z_var, -delta_logp.view(-1), z0, z, reg_loss
 
 
 class AmortizedBiasCNFVAE(AmortizedCNFVAE):

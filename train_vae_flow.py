@@ -126,10 +126,17 @@ parser.add_argument('--residual', type=eval, default=False, choices=[True, False
 parser.add_argument('--rademacher', type=eval, default=False, choices=[True, False])
 parser.add_argument('--batch_norm', type=eval, default=False, choices=[True, False])
 parser.add_argument('--bn_lag', type=float, default=0)
+
+parser.add_argument('--acc2', type=float, default=None, help="L2 square acceleration loss")
+parser.add_argument('--acc', type=float, default=None, help="L2 acceleration loss")
+parser.add_argument('--acc_smooth', type=float, default=None, help="Smoothed L2 acceleration loss")
+parser.add_argument('--num_steps', type=int, default=None, help="Number of steps for fixed step size ode methods")
 # evaluation
 parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
 parser.add_argument('--model_path', type=str, default='')
 parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
+parser.add_argument('--retrain', type=eval, default=False, choices=[True, False])
+parser.add_argument('--start_epoch', type=int, default=1)
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -242,6 +249,8 @@ def run(args, kwargs):
                 if 'p_x' in k:
                     dec_sd[k] = v
             model.load_state_dict(dec_sd, strict=False)
+        if args.retrain:
+            model = torch.load(args.model_path)
 
         if args.cuda:
             logger.info("Model on GPU")
@@ -259,7 +268,10 @@ def run(args, kwargs):
         else:
             parameters = model.parameters()
 
-        optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
+        optimizer = optim.Adam(parameters, lr=args.learning_rate)
+        if args.retrain:
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = 0
 
         # ==================================================================================================================
         # TRAINING
@@ -271,11 +283,11 @@ def run(args, kwargs):
         best_loss = np.inf
         best_bpd = np.inf
         e = 0
-        epoch = 0
+        lr_decay = 0
 
         train_times = []
 
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(args.start_epoch, args.epochs + 1):
 
             t_start = time.time()
             tr_loss = train(epoch, train_loader, model, optimizer, args, logger)
@@ -287,6 +299,9 @@ def run(args, kwargs):
 
             val_loss.append(v_loss)
 
+            if args.retrain and epoch == args.start_epoch + 1:
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = args.learning_rate
             # early-stopping
             if v_loss < best_loss:
                 e = 0
@@ -300,14 +315,36 @@ def run(args, kwargs):
             elif (args.early_stopping_epochs > 0) and (epoch >= args.warmup):
                 e += 1
                 if e > args.early_stopping_epochs:
-                    break
+                    if lr_decay in (0,1):
+                        final_model = torch.load(snap_dir + args.flow + '.model')
+                        model.load_state_dict(final_model.state_dict())
+                        final_model = None
+                        lr = args.learning_rate / 10**(lr_decay +1)
+                        e = 0
+                    elif lr_decay == 2:
+                        model.solver = "dopri5"
+                        model.num_steps = None
+                        lr = 0
+                    else:
+                        break
+
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = lr
+                    lr_decay += 1
 
             if args.input_type == 'binary':
+                logger.info(
+                    'Val loss {:.4f}'.format(v_loss)
+                )
                 logger.info(
                     '--> Early stopping: {}/{} (BEST: loss {:.4f})\n'.format(e, args.early_stopping_epochs, best_loss)
                 )
 
             else:
+                logger.info(
+                    'Val loss {:.4f}, bpd {:.4f}'.
+                    format(v_loss, v_bpd)
+                )
                 logger.info(
                     '--> Early stopping: {}/{} (BEST: loss {:.4f}, bpd {:.4f})\n'.
                     format(e, args.early_stopping_epochs, best_loss, best_bpd)
@@ -339,8 +376,8 @@ def run(args, kwargs):
         validation_loss, validation_bpd = evaluate(val_loader, final_model, args, logger)
 
     else:
-        validation_loss = "N/A"
-        validation_bpd = "N/A"
+        validation_loss = float("nan")
+        validation_bpd = float("nan")
         logger.info(f"Loading model from {args.model_path}")
         final_model = torch.load(args.model_path)
 
