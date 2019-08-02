@@ -128,7 +128,7 @@ def update_lr(optimizer, itr, epoch):
     if epoch > 200:
         args.evaluate=True
         lr = 0
-    elif epoch > 10:
+    elif epoch > 100:
         lr = args.lr/10
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
@@ -253,7 +253,7 @@ def create_model(args, data_shape, regularization_fns):
             intermediate_dims=hidden_dims,
             nonlinearity=args.nonlinearity,
             alpha=args.alpha,
-            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "regularization_fns": regularization_fns, "num_steps": args.num_steps, "adjoint": args.adjoint},
+            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "num_steps": args.num_steps, "adjoint": args.adjoint},
         )
     elif args.parallel:
         model = multiscale_parallel.MultiscaleParallelCNF(
@@ -366,7 +366,8 @@ if __name__ == "__main__":
 
     time_meter = utils.RunningAverageMeter(0.97)
     loss_meter = utils.RunningAverageMeter(0.97)
-    steps_meter = utils.RunningAverageMeter(0.97)
+    nfef_meter = utils.RunningAverageMeter(0.97)
+    nfeb_meter = utils.RunningAverageMeter(0.97)
     grad_meter = utils.RunningAverageMeter(0.97)
     tt_meter = utils.RunningAverageMeter(0.97)
 
@@ -399,7 +400,10 @@ if __name__ == "__main__":
                 total_time = count_total_time(model)
                 loss = loss + total_time * args.time_penalty
 
+                nfe_forward = count_nfe(model)
                 loss.backward()
+                nfe_total = count_nfe(model)
+                nfe_backward = nfe_total - nfe_forward
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
                 optimizer.step()
@@ -408,16 +412,18 @@ if __name__ == "__main__":
 
                 time_meter.update(time.time() - start)
                 loss_meter.update(loss.item())
-                steps_meter.update(count_nfe(model))
                 grad_meter.update(grad_norm)
+                nfef_meter.update(nfe_forward)
+                nfeb_meter.update(nfe_backward)
                 tt_meter.update(total_time)
 
                 if itr % args.log_freq == 0:
                     log_message = (
                         "Iter {:04d} | Time {:.4f}({:.4f}) | Bit/dim {:.4f}({:.4f}) | "
-                        "Steps {:.0f}({:.2f}) | Grad Norm {:.4f}({:.4f}) | Total Time {:.2f}({:.2f})".format(
-                            itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg, steps_meter.val,
-                            steps_meter.avg, grad_meter.val, grad_meter.avg, tt_meter.val, tt_meter.avg
+                        "NFE Forward {:.0f}({:.1f}) | NFE Backward {:.0f}({:.1f}) | Grad Norm {:.4f}({:.4f}) | Total Time {:.2f}({:.2f})".format(
+                            itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg,
+                            nfef_meter.val, nfef_meter.avg, nfeb_meter.val, nfeb_meter.avg,
+                            grad_meter.val, grad_meter.avg, tt_meter.val, tt_meter.avg
                         )
                     )
                     if regularization_coeffs:

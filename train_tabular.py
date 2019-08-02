@@ -106,17 +106,14 @@ ndecs = 0
 
 def update_lr(optimizer, n_vals_without_improvement):
     global ndecs
-    if ndecs == 0 and n_vals_without_improvement > args.early_stopping // 3:
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = args.lr / 10
-        ndecs = 1
-    elif ndecs == 1 and n_vals_without_improvement > args.early_stopping // 3 * 2:
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = args.lr / 100
-        ndecs = 2
-    else:
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = args.lr / 10**ndecs
+
+    if n_vals_without_improvement > args.early_stopping:
+        if ndecs < 2:
+            ndecs += 1
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = args.lr / 10**ndecs
+            n_vals_without_improvement = 0
+    return n_vals_without_improvement
 
 
 def load_data(name):
@@ -193,7 +190,8 @@ if __name__ == '__main__':
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     if not args.evaluate:
-        optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        #optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95))
 
         time_meter = utils.RunningAverageMeter(0.98)
         loss_meter = utils.RunningAverageMeter(0.98)
@@ -280,7 +278,7 @@ if __name__ == '__main__':
                             n_vals_without_improvement = 0
                         else:
                             n_vals_without_improvement += 1
-                        update_lr(optimizer, n_vals_without_improvement)
+                            n_vals_without_improvement = update_lr(optimizer, n_vals_without_improvement)
 
                         log_message = (
                             '[VAL] Iter {:06d} | Val Loss {:.6f} | NFE {:.0f} | '

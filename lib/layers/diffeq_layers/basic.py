@@ -55,14 +55,22 @@ class ConcatLinear(nn.Module):
         self._layer = forward_ad.Linear(dim_in + 1, dim_out)
 
     def forward(self, t, x):
-        tt = torch.ones_like(x[:, :1]) * t
+        #tt = torch.ones_like(x[:, :1]) * t
+        tt = t.expand((x.shape[0],1))
         ttx = torch.cat([tt, x], 1)
         return self._layer(ttx)
 
     def forward_AD(self, dt_dt, dx_dt):
-        tt = torch.ones_like(dx_dt[:, :1]) * dt_dt
+        #tt = torch.ones_like(dx_dt[:, :1]) * dt_dt
+        tt = dt_dt.expand((dx_dt.shape[0], 1))
         ttx = torch.cat([tt, dx_dt], 1)
         return self._layer.forward_AD(ttx)
+
+    def forward_AD2(self, d2t_dt2, d2x_dt2):
+        #tt = torch.ones_like(d2x_dt2[:, :1]) * d2t_dt2
+        tt = d2t_dt2.expand((d2x_dt2.shape[0], 1))
+        ttx = torch.cat([tt, d2x_dt2], 1)
+        return self._layer.forward_AD2(ttx)
 
 
 class ConcatLinear_v2(nn.Module):
@@ -112,6 +120,15 @@ class ConcatSquashLinear(nn.Module):
                 self.sigmoid.forward_AD(self._hyper_gate(dt_dt))
                 )
         return dv_dt
+
+    def forward_AD2(self, d2t_dt2, d2x_dt2):
+        d2t_dt2 = d2t_dt2.view(1,1)
+        d2v_dt2 = self.addmul.forward_AD2(
+                self._hyper_bias.forward_AD2(d2t_dt2),
+                self._layer.forward_AD2(d2x_dt2),
+                self.sigmoid.forward_AD2(self._hyper_gate(d2t_dt2))
+                )
+        return d2v_dt2
 
 
 class HyperConv2d(nn.Module):
@@ -329,7 +346,7 @@ class GatedConvTranspose(nn.Module):
         raise NotImplementedError
 
 
-class BlendLinear(nn.Module):
+class BlendLinear_v0(nn.Module):
     def __init__(self, dim_in, dim_out, **unused_kwargs):
         super(BlendLinear, self).__init__()
         self._layer0 = forward_ad.Linear(dim_in, dim_out)
@@ -345,6 +362,26 @@ class BlendLinear(nn.Module):
         return self.linear_inter.forward_AD(dt_dt, 
                 self._layer0.forward_AD(dx_dt),
                 self._layer1.forward_AD(dx_dt)
+                )
+
+class BlendLinear(nn.Module):
+    def __init__(self, dim_in, dim_out, **unused_kwargs):
+        super().__init__()
+        self._layer0 = nn.Linear(dim_in, dim_out)
+        self._layer1 = nn.Linear(dim_in, dim_out)
+        self._linear = forward_ad.FunctionalLinear()
+        self.inter_w = forward_ad.LinearInterpolate()
+        self.inter_b = forward_ad.LinearInterpolate()
+
+    def forward(self, t, x):
+        w = self.inter_w(t, self._layer0.weight, self._layer1.weight)
+        b = self.inter_b(t, self._layer0.bias, self._layer1.bias)
+        return self._linear(x, w, b)
+
+    def forward_AD(self, dt_dt, dx_dt):
+        return self._linear.forward_AD(dx_dt, 
+                self.inter_w.forward_AD(dt_dt, 0, 0), 
+                self.inter_b.forward_AD(dt_dt, 0, 0)
                 )
 
 class BlendConv2d(nn.Module):

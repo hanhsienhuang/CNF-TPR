@@ -99,6 +99,12 @@ def acceleration_l2_smooth_fn(x, logp, dx, dlogp, context):
     dv_dt = context.odefunc.forward_AD(torch.tensor(1).to(dx), dx)
     return torch.mean(torch.sqrt(1 + torch.sum(dv_dt**2, dim = tuple(range(1, len(dv_dt.shape))))) ) -1
 
+def second_order_l2_smooth_fn(x, logp, dx, dlogp, context):
+    dv_dt = context.odefunc.forward_AD(torch.tensor(1).to(dx), dx)
+    d2v_dt2 = context.odefunc.forward_AD2(torch.tensor(0).to(dx), dv_dt)
+    return torch.mean(torch.sqrt(1 + torch.sum(d2v_dt2.view(x.shape[0], -1)**2, -1)))  -1
+
+
 def _get_minibatch_jacobian(y, x, create_graph=False):
     """Computes the Jacobian of y wrt x assuming minibatch-mode.
 
