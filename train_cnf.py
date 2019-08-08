@@ -78,11 +78,8 @@ parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/d
 parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
-
-parser.add_argument('--acc2', type=float, default=None, help="L2 square acceleration loss")
-parser.add_argument('--acc', type=float, default=None, help="L2 acceleration loss")
-parser.add_argument('--acc_smooth', type=float, default=None, help="Smoothed L2 acceleration loss")
-parser.add_argument('--num_steps', type=int, default=None, help="Number of steps for fixed step size ode methods")
+parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
+parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 
 parser.add_argument("--time_penalty", type=float, default=0, help="Regularization on the end_time.")
@@ -125,10 +122,10 @@ def add_noise(x):
 def update_lr(optimizer, itr, epoch):
     iter_frac = min(float(itr + 1) / max(args.warmup_iters, 1), 1.0)
     lr = args.lr * iter_frac
-    if epoch > 200:
+    if epoch > 400:
         args.evaluate=True
         lr = 0
-    elif epoch > 100:
+    elif epoch > 200:
         lr = args.lr/10
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
@@ -226,20 +223,22 @@ def get_dataset(args):
 
 def compute_bits_per_dim(x, model):
     zero = torch.zeros(x.shape[0], 1).to(x)
+    lacc = None if (args.coef_acc is None or not model.training) else torch.tensor(0.0).to(x)
 
     # Don't use data parallelize if batch size is small.
     # if x.shape[0] < 200:
     #     model = model.module
 
-    z, delta_logp = model(x, zero)  # run model forward
+    z, delta_logp, lacc = model(x, zero, lacc)
 
     logpz = standard_normal_logprob(z).view(z.shape[0], -1).sum(1, keepdim=True)  # logp(z)
     logpx = logpz - delta_logp
 
     logpx_per_dim = torch.sum(logpx) / x.nelement()  # averaged over batches
     bits_per_dim = -(logpx_per_dim - np.log(256)) / np.log(2)
+    lacc = lacc / (x.nelement() * np.log(2)) if lacc else None
 
-    return bits_per_dim
+    return bits_per_dim, lacc
 
 
 def create_model(args, data_shape, regularization_fns):
@@ -253,7 +252,7 @@ def create_model(args, data_shape, regularization_fns):
             intermediate_dims=hidden_dims,
             nonlinearity=args.nonlinearity,
             alpha=args.alpha,
-            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "num_steps": args.num_steps, "adjoint": args.adjoint},
+            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "num_sample": args.num_sample, "adjoint": args.adjoint},
         )
     elif args.parallel:
         model = multiscale_parallel.MultiscaleParallelCNF(
@@ -344,7 +343,7 @@ if __name__ == "__main__":
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
 
     # restore parameters
     if args.resume is not None:
@@ -359,7 +358,8 @@ if __name__ == "__main__":
                         state[k] = cvt(v)
 
     if torch.cuda.is_available():
-        model = torch.nn.DataParallel(model).cuda()
+        #model = torch.nn.DataParallel(model).cuda()
+        model = model.cuda()
 
     # For visualization.
     fixed_z = cvt(torch.randn(100, *data_shape))
@@ -390,7 +390,7 @@ if __name__ == "__main__":
                 # cast data and move to device
                 x = cvt(x)
                 # compute loss
-                loss = compute_bits_per_dim(x, model)
+                loss, lacc = compute_bits_per_dim(x, model)
                 if regularization_coeffs:
                     reg_states = get_regularization(model, regularization_coeffs)
                     reg_loss = sum(
@@ -399,6 +399,8 @@ if __name__ == "__main__":
                     loss = loss + reg_loss
                 total_time = count_total_time(model)
                 loss = loss + total_time * args.time_penalty
+                if args.coef_acc is not None:
+                    loss = loss + args.coef_acc * lacc
 
                 nfe_forward = count_nfe(model)
                 loss.backward()
@@ -426,6 +428,8 @@ if __name__ == "__main__":
                             grad_meter.val, grad_meter.avg, tt_meter.val, tt_meter.avg
                         )
                     )
+                    if args.coef_acc is not None:
+                        log_message += " | acc2: {:.4E}".format(lacc)
                     if regularization_coeffs:
                         log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
                     logger.info(log_message)
@@ -443,7 +447,7 @@ if __name__ == "__main__":
                     if not args.conv:
                         x = x.view(x.shape[0], -1)
                     x = cvt(x)
-                    loss = compute_bits_per_dim(x, model)
+                    loss = compute_bits_per_dim(x, model)[0]
                     losses.append(loss.item())
 
                 loss = np.mean(losses)
@@ -462,5 +466,5 @@ if __name__ == "__main__":
         with torch.no_grad():
             fig_filename = os.path.join(args.save, "figs", "{:04d}.jpg".format(epoch))
             utils.makedirs(os.path.dirname(fig_filename))
-            generated_samples = model(fixed_z, reverse=True).view(-1, *data_shape)
+            generated_samples = model(fixed_z, reverse=True)[0].view(-1, *data_shape)
             save_image(generated_samples, fig_filename, nrow=10)

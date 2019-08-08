@@ -66,12 +66,6 @@ class ConcatLinear(nn.Module):
         ttx = torch.cat([tt, dx_dt], 1)
         return self._layer.forward_AD(ttx)
 
-    def forward_AD2(self, d2t_dt2, d2x_dt2):
-        #tt = torch.ones_like(d2x_dt2[:, :1]) * d2t_dt2
-        tt = d2t_dt2.expand((d2x_dt2.shape[0], 1))
-        ttx = torch.cat([tt, d2x_dt2], 1)
-        return self._layer.forward_AD2(ttx)
-
 
 class ConcatLinear_v2(nn.Module):
     def __init__(self, dim_in, dim_out):
@@ -120,15 +114,6 @@ class ConcatSquashLinear(nn.Module):
                 self.sigmoid.forward_AD(self._hyper_gate(dt_dt))
                 )
         return dv_dt
-
-    def forward_AD2(self, d2t_dt2, d2x_dt2):
-        d2t_dt2 = d2t_dt2.view(1,1)
-        d2v_dt2 = self.addmul.forward_AD2(
-                self._hyper_bias.forward_AD2(d2t_dt2),
-                self._layer.forward_AD2(d2x_dt2),
-                self.sigmoid.forward_AD2(self._hyper_gate(d2t_dt2))
-                )
-        return d2v_dt2
 
 
 class HyperConv2d(nn.Module):

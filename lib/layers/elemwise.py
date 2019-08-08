@@ -33,11 +33,11 @@ class LogitTransform(nn.Module):
         nn.Module.__init__(self)
         self.alpha = alpha
 
-    def forward(self, x, logpx=None, reverse=False):
+    def forward(self, x, logpx=None, lacc=None, reverse=False):
         if reverse:
-            return _sigmoid(x, logpx, self.alpha)
+            return _sigmoid(x, logpx, self.alpha) + (lacc,)
         else:
-            return _logit(x, logpx, self.alpha)
+            return _logit(x, logpx, self.alpha) + (lacc,)
 
 
 class SigmoidTransform(nn.Module):

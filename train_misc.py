@@ -121,9 +121,6 @@ REGULARIZATION_FNS = {
     "JFrobint": reg_lib.jacobian_frobenius_regularization_fn,
     "JdiagFrobint": reg_lib.jacobian_diag_frobenius_regularization_fn,
     "JoffdiagFrobint": reg_lib.jacobian_offdiag_frobenius_regularization_fn,
-    "acc2": reg_lib.acceleration_l2_square_fn,
-    "acc": reg_lib.acceleration_l2_fn,
-    "acc_smooth": reg_lib.acceleration_l2_smooth_fn,
 }
 
 INV_REGULARIZATION_FNS = {v: k for k, v in six.iteritems(REGULARIZATION_FNS)}
@@ -138,9 +135,6 @@ def append_regularization_to_log(log_message, regularization_fns, reg_states):
 def create_regularization_fns(args):
     regularization_fns = []
     regularization_coeffs = []
-
-    if sum([args.acc is not None, args.acc2 is not None, args.acc_smooth is not None]) > 1:
-        raise Exception("More than one types of acceleration loss")
 
     for arg_key, reg_fn in six.iteritems(REGULARIZATION_FNS):
         if hasattr(args, arg_key) and getattr(args, arg_key) is not None:
@@ -187,7 +181,7 @@ def build_model_tabular(args, dims, regularization_fns=None):
             T=args.time_length,
             train_T=args.train_T,
             solver=args.solver,
-            num_steps=args.num_steps,
+            num_sample=args.num_sample,
             adjoint=args.adjoint,
         )
         return cnf

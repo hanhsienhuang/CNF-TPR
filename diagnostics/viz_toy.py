@@ -33,14 +33,13 @@ def save_trajectory(model, data_samples, savedir, ntimes=101, memory=0.01, devic
 
     with torch.no_grad():
         # We expect the model is a chain of CNF layers wrapped in a SequentialFlow container.
-        logp_samples = torch.sum(standard_normal_logprob(z_samples), 1, keepdim=True)
         logp_grid = torch.sum(standard_normal_logprob(z_grid), 1, keepdim=True)
         t = 0
         for cnf in model.chain:
             end_time = (cnf.sqrt_end_time * cnf.sqrt_end_time)
             integration_times = torch.linspace(0, end_time, ntimes)
 
-            z_traj, _ = cnf(z_samples, logp_samples, integration_times=integration_times, reverse=True)
+            z_traj = cnf(z_samples, integration_times=integration_times, reverse=True)[0]
             z_traj = z_traj.cpu().numpy()
 
             grid_z_traj, grid_logpz_traj = [], []
@@ -48,7 +47,7 @@ def save_trajectory(model, data_samples, savedir, ntimes=101, memory=0.01, devic
             for ii in torch.split(inds, int(z_grid.shape[0] * memory)):
                 _grid_z_traj, _grid_logpz_traj = cnf(
                     z_grid[ii], logp_grid[ii], integration_times=integration_times, reverse=True
-                )
+                    )[:2]
                 _grid_z_traj, _grid_logpz_traj = _grid_z_traj.cpu().numpy(), _grid_logpz_traj.cpu().numpy()
                 grid_z_traj.append(_grid_z_traj)
                 grid_logpz_traj.append(_grid_logpz_traj)

@@ -6,7 +6,6 @@ import torch
 
 import lib.utils as utils
 import lib.layers.odefunc as odefunc
-from lib.custom_optimizers import Adam
 
 import datasets
 
@@ -46,7 +45,7 @@ parser.add_argument('--rademacher', type=eval, default=False, choices=[True, Fal
 parser.add_argument('--batch_norm', type=eval, default=False, choices=[True, False])
 parser.add_argument('--bn_lag', type=float, default=0)
 
-parser.add_argument('--early_stopping', type=int, default=30)
+parser.add_argument('--early_stopping', type=int, default=20)
 parser.add_argument('--batch_size', type=int, default=1000)
 parser.add_argument('--test_batch_size', type=int, default=None)
 parser.add_argument('--lr', type=float, default=1e-3)
@@ -60,10 +59,8 @@ parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx|
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
 
-parser.add_argument('--acc2', type=float, default=None, help="L2 square acceleration loss")
-parser.add_argument('--acc', type=float, default=None, help="L2 acceleration loss")
-parser.add_argument('--acc_smooth', type=float, default=None, help="Smoothed L2 acceleration loss")
-parser.add_argument('--num_steps', type=int, default=None, help="Number of steps for fixed step size ode methods")
+parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
+parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 
 parser.add_argument('--resume', type=str, default=None)
@@ -139,13 +136,14 @@ def load_data(name):
 
 def compute_loss(x, model):
     zero = torch.zeros(x.shape[0], 1).to(x)
+    lacc = None if (args.coef_acc is None or not model.training) else torch.tensor(0.0).to(x)
 
-    z, delta_logp = model(x, zero)  # run model forward
+    z, delta_logp, lacc = model(x, zero, lacc)
 
     logpz = standard_normal_logprob(z).view(z.shape[0], -1).sum(1, keepdim=True)  # logp(z)
     logpx = logpz - delta_logp
     loss = -torch.mean(logpx)
-    return loss
+    return loss, lacc
 
 
 def restore_model(model, filename):
@@ -190,7 +188,6 @@ if __name__ == '__main__':
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     if not args.evaluate:
-        #optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95))
 
         time_meter = utils.RunningAverageMeter(0.98)
@@ -215,7 +212,7 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
 
                 x = cvt(x)
-                loss = compute_loss(x, model)
+                loss, lacc = compute_loss(x, model)
                 loss_meter.update(loss.item())
 
                 if len(regularization_coeffs) > 0:
@@ -227,6 +224,9 @@ if __name__ == '__main__':
 
                 total_time = count_total_time(model)
                 nfe_forward = count_nfe(model)
+
+                if args.coef_acc is not None:
+                    loss = loss + args.coef_acc * lacc
 
                 loss.backward()
                 optimizer.step()
@@ -249,6 +249,9 @@ if __name__ == '__main__':
                             nfeb_meter.avg, tt_meter.val, tt_meter.avg
                         )
                     )
+                    if args.coef_acc is not None:
+                        log_message += " | acc2: {:.4E}".format(lacc)
+
                     if len(regularization_coeffs) > 0:
                         log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
 
@@ -265,7 +268,7 @@ if __name__ == '__main__':
                         val_nfe = utils.AverageMeter()
                         for x in batch_iter(data.val.x, batch_size=test_batch_size):
                             x = cvt(x)
-                            val_loss.update(compute_loss(x, model).item(), x.shape[0])
+                            val_loss.update(compute_loss(x, model)[0].item(), x.shape[0])
                             val_nfe.update(count_nfe(model))
 
                         if val_loss.avg < best_loss:
@@ -303,7 +306,7 @@ if __name__ == '__main__':
         test_nfe = utils.AverageMeter()
         for itr, x in enumerate(batch_iter(data.tst.x, batch_size=test_batch_size)):
             x = cvt(x)
-            test_loss.update(compute_loss(x, model).item(), x.shape[0])
+            test_loss.update(compute_loss(x, model).item()[0], x.shape[0])
             test_nfe.update(count_nfe(model))
             logger.info('Progress: {:.2f}%'.format(100. * itr / (data.tst.x.shape[0] / test_batch_size)))
         log_message = '[TEST] Iter {:06d} | Test Loss {:.6f} | NFE {:.0f}'.format(itr, test_loss.avg, test_nfe.avg)

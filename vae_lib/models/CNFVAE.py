@@ -11,37 +11,6 @@ from train_misc import create_regularization_fns
 
 from torchdiffeq import odeint_adjoint as odeint
 
-class ODEfuncWrapper(nn.Module):
-    def __init__(self, odefunc, regularization_fns):
-        super().__init__()
-        self.odefunc = odefunc
-        self.regularization_fns = regularization_fns
-
-    def before_odeint(self, nreg):
-        self.nreg = nreg
-        self.odefunc.before_odeint()
-
-    def forward(self, t, state):
-        class SharedContext(object):
-            pass
-
-        state = state[self.nreg:]
-        with torch.enable_grad():
-            x, logp = state[:2]
-            x.requires_grad_(True)
-            logp.requires_grad_(True)
-            dstate = self.odefunc(t, state)
-            if self.nreg > 0:
-                SharedContext.odefunc = self.odefunc
-                dx, dlogp = dstate[:2]
-                reg_states = tuple(reg_fn(x, logp, dx, dlogp, SharedContext) for reg_fn in self.regularization_fns)
-                return reg_states + dstate 
-            else:
-                return dstate
-
-    @property
-    def _num_evals(self):
-        return self.odefunc._num_evals
 
 def get_hidden_dims(args):
     return tuple(map(int, args.dims.split("-"))) + (args.z_size,)
@@ -368,9 +337,9 @@ class AmortizedCNFVAE(VAE):
         super(AmortizedCNFVAE, self).__init__(args)
 
         # CNF model
-        odefuncs = [
+        self.odefuncs = nn.ModuleList([
             construct_amortized_odefunc(args, args.z_size, self.amortization_type) for _ in range(args.num_blocks)
-        ]
+        ])
         self.q_am = self._amortized_layers(args)
         assert len(self.q_am) == args.num_blocks or len(self.q_am) == 0
 
@@ -381,13 +350,9 @@ class AmortizedCNFVAE(VAE):
         self.atol = args.atol
         self.rtol = args.rtol
         self.solver = args.solver
-        self.test_solver = args.test_solver if args.test_solver is not None else args.solver
-        self.num_steps = args.num_steps
+        self.num_sample = args.num_sample
+        self.coef_acc = args.coef_acc
 
-        regularization_fns, regularization_coeffs = create_regularization_fns(args)
-        self.wrapped_funcs  = nn.ModuleList([ODEfuncWrapper(odefunc, regularization_fns) for odefunc in odefuncs])
-        self.regularization_coeffs = regularization_coeffs
-        self.nreg = len(regularization_coeffs)
 
     def encode(self, x):
         """
@@ -411,38 +376,71 @@ class AmortizedCNFVAE(VAE):
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
 
-        if self.training and self.num_steps is not None:
-            integration_times = sample_unique(self.num_steps).to(x) * self.time_length
+        if self.training and self.num_sample is not None:
+            z, delta_logp, lacc = self.sample(z0, am_params)
         else:
-            integration_times = torch.tensor([0.0, self.time_length]).to(x)
-        solver = self.solver if self.training else self.test_solver
+            z, delta_logp, lacc = self.solve(z0, am_params)
 
-        delta_logp = torch.zeros(x.shape[0], 1).to(x)
-        if self.training:
-            reg_states = tuple(torch.tensor(0).to(x) for _ in range(self.nreg))
-        else:
-            reg_states = ()
+        x_mean = self.decode(z)
+        return x_mean, z_mu, z_var, -delta_logp.view(-1), z0, z, lacc
+
+    def sample(self, z0, am_params):
+        need_acc = self.coef_acc is not None
         z = z0
-        states = reg_states + (z, delta_logp) 
-        nreg = len(reg_states)
-        for wrapped_func, am_param in zip(self.wrapped_funcs, am_params):
-            am_param_unpacked = wrapped_func.odefunc.diffeq._unpack_params(am_param)
-            wrapped_func.before_odeint(nreg)
+        laccs = []
+        dlogps = []
+        for odefunc, am_param in zip(self.odefuncs, am_params):
+            integration_times = sample_unique(self.num_sample).to(z0) * self.time_length
+            am_param_unpacked = odefunc.diffeq._unpack_params(am_param)
+            odefunc.before_odeint(output_div=False, output_acc=False)
             states = odeint(
-                wrapped_func,
+                odefunc,
+                (z,) + tuple(am_param_unpacked),
+                integration_times,
+                atol=self.atol,
+                rtol=self.rtol,
+                method=self.solver,
+            )
+            z_t = states[0]
+            z = z_t[-1]
+
+            time_length = integration_times[-1] - integration_times[0]
+            samples = None
+            for t, z in zip(integration_times[1:-1], z_t[1:-1]):
+                output = odefunc._forward(t, z, output_div = True, output_acc = need_acc, additional = am_param_unpacked)[1:]
+                if not samples:
+                    samples = [[] for i in range(len(output))]
+                for i in range(len(output)):
+                    samples[i].append(output[i])
+            for i in range(len(samples)):
+                samples[i] = torch.stack(samples[i]).mean(0)*time_length
+            dlogps.append(samples[0])
+            if need_acc:
+                laccs.append(samples[1])
+        return z, sum(dlogps), sum(laccs) if need_acc else None
+
+    def solve(self, z0, am_params):
+        need_acc = self.training and self.coef_acc is not None
+        integration_times = torch.tensor([0.0, self.time_length]).to(z0)
+        states = (z0, torch.zeros(z0.shape[0], 1).to(z0)) 
+        num_vars = 2
+        if need_acc:
+            states += (torch.tensor(0.0).to(z0), )
+            num_vars += 1
+
+        for odefunc, am_param in zip(self.odefuncs, am_params):
+            am_param_unpacked = odefunc.diffeq._unpack_params(am_param)
+            odefunc.before_odeint(output_div=True, output_acc=need_acc)
+            states = odeint(
+                odefunc,
                 states + tuple(am_param_unpacked),
                 integration_times,
                 atol=self.atol,
                 rtol=self.rtol,
-                method=solver,
+                method=self.solver,
             )
-            states = tuple(state[-1] for state in states[:nreg+2])
-
-        reg_states, (z, delta_logp) = states[:nreg], states[nreg:]
-        x_mean = self.decode(z)
-
-        reg_loss = sum([reg*coef for reg, coef in zip(reg_states, self.regularization_coeffs)], torch.tensor(0).to(z))
-        return x_mean, z_mu, z_var, -delta_logp.view(-1), z0, z, reg_loss
+            states = tuple(state[-1] for state in states[:num_vars])
+        return states[:2] + (states[2] if need_acc else None,)
 
 
 class AmortizedBiasCNFVAE(AmortizedCNFVAE):

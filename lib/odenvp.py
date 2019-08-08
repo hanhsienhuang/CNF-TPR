@@ -96,17 +96,16 @@ class ODENVP(nn.Module):
                 output_sizes.append((n, c, h, w))
         return tuple(output_sizes)
 
-    def forward(self, x, logpx=None, reverse=False):
+    def forward(self, x, logpx=None, lacc=None, reverse=False):
         if reverse:
-            return self._generate(x, logpx)
+            return self._generate(x, logpx, lacc)
         else:
-            return self._logdensity(x, logpx)
+            return self._logdensity(x, logpx, lacc)
 
-    def _logdensity(self, x, logpx=None):
-        _logpx = torch.zeros(x.shape[0], 1).to(x) if logpx is None else logpx
+    def _logdensity(self, x, logpx=None, lacc=None):
         out = []
         for idx in range(len(self.transforms)):
-            x, _logpx = self.transforms[idx].forward(x, _logpx)
+            x, logpx, lacc = self.transforms[idx].forward(x, logpx, lacc)
             if idx < len(self.transforms) - 1:
                 d = x.size(1) // 2
                 x, factor_out = x[:, :d], x[:, d:]
@@ -116,9 +115,9 @@ class ODENVP(nn.Module):
             out.append(factor_out)
         out = [o.view(o.size()[0], -1) for o in out]
         out = torch.cat(out, 1)
-        return out if logpx is None else (out, _logpx)
+        return out, logpx, lacc
 
-    def _generate(self, z, logpz=None):
+    def _generate(self, z, logpz=None, lacc=None):
         z = z.view(z.shape[0], -1)
         zs = []
         i = 0
@@ -127,12 +126,11 @@ class ODENVP(nn.Module):
             zs.append(z[:, i:i + s])
             i += s
         zs = [_z.view(_z.size()[0], *zsize) for _z, zsize in zip(zs, self.dims)]
-        _logpz = torch.zeros(zs[0].shape[0], 1).to(zs[0]) if logpz is None else logpz
-        z_prev, _logpz = self.transforms[-1](zs[-1], _logpz, reverse=True)
+        z_prev, logpz, lacc = self.transforms[-1](zs[-1], logpz, lacc, reverse=True)
         for idx in range(len(self.transforms) - 2, -1, -1):
             z_prev = torch.cat((z_prev, zs[idx]), dim=1)
-            z_prev, _logpz = self.transforms[idx](z_prev, _logpz, reverse=True)
-        return z_prev if logpz is None else (z_prev, _logpz)
+            z_prev, logpz, lacc = self.transforms[idx](z_prev, logpz, lacc, reverse=True)
+        return z_prev, _logpz, lacc
 
 
 class StackedCNFLayers(layers.SequentialFlow):

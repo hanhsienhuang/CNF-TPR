@@ -13,9 +13,6 @@ class Linear(nn.Module):
     def forward_AD(self, dx_dt):
         return F.linear(dx_dt, self.linear.weight)
 
-    def forward_AD2(self, d2x_dt2):
-        return F.linear(d2x_dt2, self.linear.weight)
-
 class FunctionalLinear(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -40,12 +37,7 @@ class Addmul(nn.Module):
     def forward_AD(self, dx1_dt, dx2_dt, dx3_dt):
         (x2, x3), self.stored = self.stored, None
         dv_dt = dx1_dt + x2 * dx3_dt + dx2_dt * x3
-        self.stored2 = (x2, dx2_dt, x3, dx3_dt)
         return dv_dt
-
-    def forward_AD2(self, d2x1_dt2, d2x2_dt2, d2x3_dt2):
-        (x2, dx2_dt, x3, dx3_dt), self.stored2 = self.stored2, None
-        return d2x1_dt2 + d2x2_dt2*x3 + d2x3_dt2*x2 + 2*dx2_dt*dx3_dt
 
 class LinearInterpolate(nn.Module):
     """ x0*(1-t) + x1*t"""
@@ -101,10 +93,5 @@ class Activation(nn.Module):
     def forward_AD(self, dx_dt):
         (x, out), self.stored = self.stored, None
         act_grad = torch.autograd.grad(out, x, torch.ones_like(out), create_graph=True)[0]
-        self.stored2 = (x, dx_dt, act_grad)
         return dx_dt * act_grad
 
-    def forward_AD2(self, d2x_dt2):
-        (x, dx_dt, act_grad), self.stored2 = self.stored2, None
-        act_grad2 = torch.autograd.grad(act_grad, x, torch.ones_like(x), create_graph=True)[0]
-        return d2x_dt2 * act_grad + dx_dt**2 * act_grad2

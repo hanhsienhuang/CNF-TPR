@@ -67,10 +67,8 @@ parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/d
 parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
-parser.add_argument('--acc2', type=float, default=None, help="L2 square acceleration loss")
-parser.add_argument('--acc', type=float, default=None, help="L2 acceleration loss")
-parser.add_argument('--acc_smooth', type=float, default=None, help="Smoothed L2 acceleration loss")
-parser.add_argument('--num_steps', type=int, default=None, help="Number of steps for fixed step size ode methods")
+parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
+parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 
 parser.add_argument('--save', type=str, default='experiments/cnf')
@@ -97,15 +95,15 @@ def get_transforms(model):
 
     def sample_fn(z, logpz=None):
         if logpz is not None:
-            return model(z, logpz, reverse=True)
+            return model(z, logpz, reverse=True)[:2]
         else:
-            return model(z, reverse=True)
+            return model(z, reverse=True)[0]
 
     def density_fn(x, logpx=None):
         if logpx is not None:
-            return model(x, logpx, reverse=False)
+            return model(x, logpx, reverse=False)[:2]
         else:
-            return model(x, reverse=False)
+            return model(x, reverse=False)[0]
 
     return sample_fn, density_fn
 
@@ -117,16 +115,17 @@ def compute_loss(args, model, batch_size=None):
     x = toy_data.inf_train_gen(args.data, batch_size=batch_size)
     x = torch.from_numpy(x).type(torch.float32).to(device)
     zero = torch.zeros(x.shape[0], 1).to(x)
+    lacc = None if (args.coef_acc is None or not model.training) else torch.tensor(0.0).to(x)
 
     # transform to z
-    z, delta_logp = model(x, zero)
+    z, delta_logp, lacc = model(x, zero, lacc)
 
     # compute log q(z)
     logpz = standard_normal_logprob(z).sum(1, keepdim=True)
 
     logpx = logpz - delta_logp
     loss = -torch.mean(logpx)
-    return loss
+    return loss, lacc
 
 
 if __name__ == '__main__':
@@ -154,7 +153,7 @@ if __name__ == '__main__':
         optimizer.zero_grad()
         if args.spectral_norm: spectral_norm_power_iteration(model, 1)
 
-        loss = compute_loss(args, model)
+        loss, lacc = compute_loss(args, model)
         loss_meter.update(loss.item())
 
         if len(regularization_coeffs) > 0:
@@ -166,6 +165,9 @@ if __name__ == '__main__':
 
         total_time = count_total_time(model)
         nfe_forward = count_nfe(model)
+
+        if args.coef_acc is not None:
+            loss = loss + args.coef_acc * lacc
 
         loss.backward()
         optimizer.step()
@@ -185,6 +187,9 @@ if __name__ == '__main__':
                 nfeb_meter.val, nfeb_meter.avg, tt_meter.val, tt_meter.avg
             )
         )
+        if args.coef_acc is not None:
+            log_message += " | acc2: {:.4E}".format(lacc)
+
         if len(regularization_coeffs) > 0:
             log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
 
@@ -193,7 +198,7 @@ if __name__ == '__main__':
         if itr % args.val_freq == 0 or itr == args.niters:
             with torch.no_grad():
                 model.eval()
-                test_loss = compute_loss(args, model, batch_size=args.test_batch_size)
+                test_loss, _ = compute_loss(args, model, batch_size=args.test_batch_size)
                 test_nfe = count_nfe(model)
                 log_message = '[TEST] Iter {:04d} | Test Loss {:.6f} | NFE {:.0f}'.format(itr, test_loss, test_nfe)
                 logger.info(log_message)

@@ -32,14 +32,15 @@ def train(epoch, train_loader, model, opt, args, logger):
         data = data.view(-1, *args.input_size)
 
         opt.zero_grad()
-        x_mean, z_mu, z_var, ldj, z0, zk, add_loss = model(data)
+        x_mean, z_mu, z_var, ldj, z0, zk, lacc = model(data)
 
         if 'cnf' in args.flow:
             f_nfe = count_nfe(model)
 
         loss, rec, kl, bpd = calculate_loss(x_mean, data, z_mu, z_var, z0, zk, ldj, args, beta=beta)
 
-        (loss+add_loss).backward()
+        loss = loss + lacc * args.coef_acc if args.coef_acc is not None else loss
+        loss.backward()
 
         if 'cnf' in args.flow:
             t_nfe = count_nfe(model)
@@ -75,7 +76,9 @@ def train(epoch, train_loader, model, opt, args, logger):
                 log_msg = "".join(log_msg)
             if 'cnf' in args.flow:
                 log_msg += ' | NFE Forward {} | NFE Backward {}'.format(f_nfe, b_nfe)
-            log_msg += ' | Acc {}'.format(add_loss.item())
+            if args.coef_acc is not None:
+                log_msg += " | acc2: {:.4E}".format(lacc)
+
             logger.info(log_msg)
 
     if args.input_type == 'binary':

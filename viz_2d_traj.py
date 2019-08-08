@@ -6,7 +6,7 @@ import numpy as np
 import math
 from matplotlib.collections import LineCollection
 
-name_format = "experiments/toy-{}-blend-samp1-acc2-0.1/checkpt.pth"
+name_format = "experiments/toy-{}-concat-sampacc-samp1-secondsmooth-0.01/checkpt.pth"
 
 def standard_normal_logprob(z):
     logZ = -0.5 * math.log(2 * math.pi)
@@ -25,9 +25,9 @@ def plot(ax, filename, title):
     z = torch.Tensor(z)
 
     num_steps = 20
-    #t = torch.linspace(0, 0.5, steps = num_steps)
-    t = torch.linspace(0, 1, steps = num_steps)
-    ys = model.chain[0](z, reverse = True, integration_times = t)
+    t = torch.linspace(0, 0.5, steps = num_steps)
+    #t = torch.linspace(0, 1, steps = num_steps)
+    ys = model.chain[0](z, reverse = True, integration_times = t)[0]
     ys = ys.detach().numpy()
 
     for i in range(z.shape[0]):

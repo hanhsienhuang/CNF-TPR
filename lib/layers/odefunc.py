@@ -183,16 +183,6 @@ class ODEnet(nn.Module):
                 dv_dt = self.activation_fns[l].forward_AD(dv_dt)
         return dv_dt
 
-    def forward_AD2(self, d2t_dt2, d2x_dt2):
-        d2v_dt2 = d2x_dt2
-        for l, layer in enumerate(self.layers):
-            d2v_dt2 = layer.forward_AD2(d2t_dt2, d2v_dt2)
-
-            # if not last layer, use nonlinearity
-            if l < len(self.layers) - 1:
-                d2v_dt2 = self.activation_fns[l].forward_AD2(d2v_dt2)
-        return d2v_dt2
-
 
 class AutoencoderDiffEqNet(nn.Module):
     """
@@ -283,6 +273,8 @@ class ODEfunc(nn.Module):
         self.diffeq = diffeq
         self.residual = residual
         self.rademacher = rademacher
+        self.output_div = False
+        self.output_acc = False
 
         if divergence_fn == "brute_force":
             self.divergence_fn = divergence_bf
@@ -291,28 +283,32 @@ class ODEfunc(nn.Module):
 
         self.register_buffer("_num_evals", torch.tensor(0.))
 
-    def before_odeint(self, e=None):
+    def before_odeint(self, e=None, output_div=True, output_acc=False):
         self._e = e
         self._num_evals.fill_(0)
+        self.output_div = output_div
+        self.output_acc = output_acc
 
     def forward(self, t, states):
         y = states[0]
-        need_divergence = len(states) > 1
-
-        # increment num evals
-        self._num_evals += 1
 
         # convert to tensor
         t = torch.tensor(t).type_as(y)
-        batchsize = y.shape[0]
+        num_vars = 1 + sum([self.output_div, self.output_acc])
+        outputs = self._forward(t, y, self.output_div, self.output_acc, additional = states[num_vars:])
+        return tuple(outputs + [torch.zeros_like(s_).requires_grad_(True) for s_ in states[len(outputs):]])
 
+
+    def _forward(self, t, y, output_div, output_acc, additional = ()):
+        outputs = []
         with torch.set_grad_enabled(True):
             y.requires_grad_(True)
             t.requires_grad_(True)
-            for s_ in states[2:]:
-                s_.requires_grad_(True)
-            dy = self.diffeq(t, y)
-            if need_divergence:
+            v = self.diffeq(t, y, *additional)
+            self._num_evals += 1
+            outputs.append(v)
+            batchsize = y.shape[0]
+            if output_div:
                 if self._e is None:
                     if self.rademacher:
                         self._e = sample_rademacher_like(y)
@@ -320,105 +316,24 @@ class ODEfunc(nn.Module):
                         self._e = sample_gaussian_like(y)
 
                 # Hack for 2D data to use brute force divergence computation.
-                if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
-                    divergence = divergence_bf(dy, y, training = self.training).view(batchsize, 1)
+                if not self.training and y.view(y.shape[0], -1).shape[1] == 2:
+                    divergence = divergence_bf(v, y, training = self.training).view(batchsize, 1)
                 else:
-                    divergence = self.divergence_fn(dy, y, e=self._e, training = self.training).view(batchsize, 1)
-        if self.residual:
-            dy = dy - y
-            if need_divergence:
-                divergence -= torch.ones_like(divergence) * torch.tensor(np.prod(y.shape[1:]), dtype=torch.float32
-                                                                     ).to(divergence)
-        if not need_divergence:
-            return (dy,)
-        return (dy, -divergence)
+                    divergence = self.divergence_fn(v, y, e=self._e, training = self.training).view(batchsize, 1)
+                outputs.append(-divergence)
+                self._num_evals += 1
 
-    def get_acc(self, t, y):
-        with torch.set_grad_enabled(True):
-            y.requires_grad_(True)
-            t.requires_grad_(True) 
-            dy = self.diffeq(t, y)
+            if output_acc:
+                dt_dt = torch.tensor(1.0).to(y)
+                dy_dt = v
+                dv_dt = self.diffeq.forward_AD(dt_dt, dy_dt)
+                acc = torch.sum(dv_dt**2)/batchsize
+                outputs.append(acc)
+                self._num_evals += 1
 
-        dt_dt = torch.tensor(1.0).to(y)
-        dx_dt = dy
-        dv_dt = self.diffeq.forward_AD(dt_dt, dx_dt)
-        acceleration = torch.sum(dv_dt**2)/y.shape[0]
-        #acceleration = torch.mean(torch.sqrt(1 + torch.sum(dv_dt**2, dim = tuple(range(1, len(dv_dt.shape))))) ) -1
-        dim = tuple(range(1, len(dv_dt.shape)))
-        total_dim = np.prod(dv_dt.shape[1:])
-        #acceleration = torch.mean(torch.sqrt(torch.sum(dv_dt**2, dim = dim) + total_dim**2) ) -total_dim
+        return outputs
+        
 
-        return acceleration
-
-    def get_div(self, t, y):
-        with torch.set_grad_enabled(True):
-            y.requires_grad_(True)
-            t.requires_grad_(True) 
-            dy = self.diffeq(t, y)
-            batchsize = y.shape[0]
-            if self._e is None: 
-                if self.rademacher:
-                    self._e = sample_rademacher_like(y)
-                else:
-                    self._e = sample_gaussian_like(y)
-
-            if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
-                divergence = divergence_bf(dy, y, training = self.training).view(batchsize, 1)
-            else:
-                divergence = self.divergence_fn(dy, y, e=self._e, training = self.training).view(batchsize, 1)
-
-        return divergence
-
-    def get_div_and_acc(self, t, y):
-        with torch.set_grad_enabled(True):
-            y.requires_grad_(True)
-            t.requires_grad_(True) 
-            dy = self.diffeq(t, y)
-            batchsize = y.shape[0]
-            if self._e is None: 
-                if self.rademacher:
-                    self._e = sample_rademacher_like(y)
-                else:
-                    self._e = sample_gaussian_like(y)
-
-            if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
-                divergence = divergence_bf(dy, y, training = self.training).view(batchsize, 1)
-            else:
-                divergence = self.divergence_fn(dy, y, e=self._e, training = self.training).view(batchsize, 1)
-
-        dt_dt = torch.tensor(1.0).to(y)
-        dx_dt = dy
-        dv_dt = self.diffeq.forward_AD(dt_dt, dx_dt)
-        acceleration = torch.sum(dv_dt**2)/y.shape[0]
-        #acceleration = torch.mean(torch.sqrt(1 + torch.sum(dv_dt**2, dim = tuple(range(1, len(dv_dt.shape))))) ) -1
-
-        return divergence, acceleration
-
-    def get_div_and_second(self, t, y):
-        with torch.set_grad_enabled(True):
-            y.requires_grad_(True)
-            t.requires_grad_(True) 
-            dy = self.diffeq(t, y)
-            batchsize = y.shape[0]
-            if self._e is None: 
-                if self.rademacher:
-                    self._e = sample_rademacher_like(y)
-                else:
-                    self._e = sample_gaussian_like(y)
-
-            if not self.training and dy.view(dy.shape[0], -1).shape[1] == 2:
-                divergence = divergence_bf(dy, y, training = self.training).view(batchsize, 1)
-            else:
-                divergence = self.divergence_fn(dy, y, e=self._e, training = self.training).view(batchsize, 1)
-
-        dt_dt = torch.tensor(1.0).to(y)
-        dx_dt = dy
-        dv_dt = self.diffeq.forward_AD(dt_dt, dx_dt)
-        d2v_dt2 = self.diffeq.forward_AD2(torch.tensor(0).to(dy), dv_dt)
-        #second = torch.sum(d2v_dt2**2)/y.shape[0]
-        second = torch.mean(torch.sqrt(1 + torch.sum(d2v_dt2**2, dim = tuple(range(1, dv_dt.dim())))) ) -1
-
-        return divergence, second
 
 
 class AutoencoderODEfunc(nn.Module):
