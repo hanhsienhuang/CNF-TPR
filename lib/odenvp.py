@@ -130,7 +130,7 @@ class ODENVP(nn.Module):
         for idx in range(len(self.transforms) - 2, -1, -1):
             z_prev = torch.cat((z_prev, zs[idx]), dim=1)
             z_prev, logpz, lacc = self.transforms[idx](z_prev, logpz, lacc, reverse=True)
-        return z_prev, _logpz, lacc
+        return z_prev, logpz, lacc
 
 
 class StackedCNFLayers(layers.SequentialFlow):

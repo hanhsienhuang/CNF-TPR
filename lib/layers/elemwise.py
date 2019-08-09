@@ -58,14 +58,14 @@ def _logit(x, logpx=None, alpha=_DEFAULT_ALPHA):
     s = alpha + (1 - 2 * alpha) * x
     y = torch.log(s) - torch.log(1 - s)
     if logpx is None:
-        return y
+        return (y, None)
     return y, logpx - _logdetgrad(x, alpha).view(x.size(0), -1).sum(1, keepdim=True)
 
 
 def _sigmoid(y, logpy=None, alpha=_DEFAULT_ALPHA):
     x = (torch.sigmoid(y) - alpha) / (1 - 2 * alpha)
     if logpy is None:
-        return x
+        return (x, None)
     return x, logpy + _logdetgrad(x, alpha).view(x.size(0), -1).sum(1, keepdim=True)
 
 

@@ -51,7 +51,7 @@ parser.add_argument("--alpha", type=float, default=1e-6)
 parser.add_argument('--time_length', type=float, default=1.0)
 parser.add_argument('--train_T', type=eval, default=False)
 
-parser.add_argument("--num_epochs", type=int, default=1000)
+parser.add_argument("--num_epochs", type=int, default=450)
 parser.add_argument("--batch_size", type=int, default=200)
 parser.add_argument(
     "--batch_size_schedule", type=str, default="", help="Increases the batchsize at every given epoch, dash separated."
@@ -236,7 +236,7 @@ def compute_bits_per_dim(x, model):
 
     logpx_per_dim = torch.sum(logpx) / x.nelement()  # averaged over batches
     bits_per_dim = -(logpx_per_dim - np.log(256)) / np.log(2)
-    lacc = lacc / (x.nelement() * np.log(2)) if lacc else None
+    lacc = lacc / (x[0].nelement() * np.log(2)) if lacc else None
 
     return bits_per_dim, lacc
 
@@ -458,7 +458,7 @@ if __name__ == "__main__":
                     utils.makedirs(args.save)
                     torch.save({
                         "args": args,
-                        "state_dict": model.module.state_dict() if torch.cuda.is_available() else model.state_dict(),
+                        "state_dict": model.state_dict(),
                         "optim_state_dict": optimizer.state_dict(),
                     }, os.path.join(args.save, "checkpt.pth"))
 
