@@ -266,8 +266,9 @@ def run(args, kwargs):
         else:
             parameters = model.parameters()
 
-        #optimizer = optim.Adam(parameters, lr=args.learning_rate, betas=(0.9, 0.95))
-        optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
+        optimizer = optim.Adam(parameters, lr=args.learning_rate, betas=(0.9, 0.95))
+        #optimizer = optim.Adam(parameters, lr=args.learning_rate)
+        #optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
         if args.retrain:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = 0
@@ -314,23 +315,18 @@ def run(args, kwargs):
             elif (args.early_stopping_epochs > 0) and (epoch >= args.warmup):
                 e += 1
                 if e > args.early_stopping_epochs:
-                    break
-                    #if lr_decay in (0,1):
-                    #    final_model = torch.load(snap_dir + args.flow + '.model')
-                    #    model.load_state_dict(final_model.state_dict())
-                    #    final_model = None
-                    #    lr = args.learning_rate / 10**(lr_decay +1)
-                    #    e = 0
-                    #elif lr_decay == 2:
-                    #    model.solver = "dopri5"
-                    #    model.num_steps = None
-                    #    lr = 0
-                    #else:
-                    #    break
+                    if lr_decay in (0,1):
+                        final_model = torch.load(snap_dir + args.flow + '.model')
+                        model.load_state_dict(final_model.state_dict())
+                        final_model = None
+                        lr = args.learning_rate / 10**(lr_decay +1)
+                        e = 0
+                    else:
+                        break
 
-                    #for param_group in optimizer.param_groups:
-                    #    param_group["lr"] = lr
-                    #lr_decay += 1
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = lr
+                    lr_decay += 1
 
             if args.input_type == 'binary':
                 logger.info(

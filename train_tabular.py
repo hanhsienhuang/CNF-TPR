@@ -8,6 +8,7 @@ import lib.utils as utils
 import lib.layers.odefunc as odefunc
 
 import datasets
+from shutil import copy
 
 from train_misc import standard_normal_logprob
 from train_misc import set_cnf_options, count_nfe, count_parameters, count_total_time
@@ -62,6 +63,7 @@ parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t |
 parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
 parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
+parser.add_argument('--time', type=float, default=None, help="Total time of training")
 
 parser.add_argument('--resume', type=str, default=None)
 parser.add_argument('--save', type=str, default='experiments/cnf')
@@ -188,7 +190,8 @@ if __name__ == '__main__':
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     if not args.evaluate:
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95))
+        #optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95))
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
         time_meter = utils.RunningAverageMeter(0.98)
         loss_meter = utils.RunningAverageMeter(0.98)
@@ -200,6 +203,7 @@ if __name__ == '__main__':
         itr = 0
         n_vals_without_improvement = 0
         end = time.time()
+        train_time = 0
         model.train()
         while True:
             if args.early_stopping > 0 and n_vals_without_improvement > args.early_stopping:
@@ -237,6 +241,8 @@ if __name__ == '__main__':
                 nfeb_meter.update(nfe_backward)
 
                 time_meter.update(time.time() - end)
+                if args.time is not None:
+                    train_time += time_meter.val
                 tt_meter.update(total_time)
 
                 if itr % args.log_freq == 0:
@@ -251,6 +257,8 @@ if __name__ == '__main__':
                     )
                     if args.coef_acc is not None:
                         log_message += " | acc2: {:.4E}".format(lacc)
+                    if args.time is not None:
+                        log_message += " | Total time: {:.2f}".format(train_time)
 
                     if len(regularization_coeffs) > 0:
                         log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
@@ -290,6 +298,12 @@ if __name__ == '__main__':
                             )
                         )
                         logger.info(log_message)
+                    if args.time is not None and train_time > args.time:
+                        if not os.path.isfile(os.path.join(args.save, 'checkpt-time-limited.pth')):
+                            copy(os.path.join(args.save, 'checkpt.pth'), os.path.join(args.save, 'checkpt-time-limited.pth'))
+                        n_vals_without_improvement = args.early_stopping + 1
+                        logger.info("finish training because total training time {} exceeds {}".format(train_time, args.time))
+
                     model.train()
 
         logger.info('Training has finished.')
@@ -306,7 +320,7 @@ if __name__ == '__main__':
         test_nfe = utils.AverageMeter()
         for itr, x in enumerate(batch_iter(data.tst.x, batch_size=test_batch_size)):
             x = cvt(x)
-            test_loss.update(compute_loss(x, model).item()[0], x.shape[0])
+            test_loss.update(compute_loss(x, model)[0].item(), x.shape[0])
             test_nfe.update(count_nfe(model))
             logger.info('Progress: {:.2f}%'.format(100. * itr / (data.tst.x.shape[0] / test_batch_size)))
         log_message = '[TEST] Iter {:06d} | Test Loss {:.6f} | NFE {:.0f}'.format(itr, test_loss.avg, test_nfe.avg)

@@ -9,7 +9,7 @@ from lib.layers.odefunc import NONLINEARITIES
 from lib.layers.cnf import sample_unique
 from train_misc import create_regularization_fns
 
-from torchdiffeq import odeint_adjoint as odeint
+from lib.layers.torchdiffeq import odeint_adjoint as odeint
 
 
 def get_hidden_dims(args):

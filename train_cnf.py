@@ -8,6 +8,7 @@ import torch.optim as optim
 import torchvision.datasets as dset
 import torchvision.transforms as tforms
 from torchvision.utils import save_image
+from shutil import copy
 
 import lib.layers as layers
 import lib.utils as utils
@@ -81,6 +82,7 @@ parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t |
 parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
 parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
+parser.add_argument('--time', type=float, default=None, help="Total time of training")
 
 parser.add_argument("--time_penalty", type=float, default=0, help="Regularization on the end_time.")
 parser.add_argument(
@@ -343,7 +345,8 @@ if __name__ == "__main__":
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
+    #optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # restore parameters
     if args.resume is not None:
@@ -375,6 +378,7 @@ if __name__ == "__main__":
 
     best_loss = float("inf")
     itr = 0
+    train_time = 0
     for epoch in range(args.begin_epoch, args.num_epochs + 1):
         model.train()
         train_loader = get_train_loader(train_set, epoch)
@@ -419,6 +423,8 @@ if __name__ == "__main__":
                 nfeb_meter.update(nfe_backward)
                 tt_meter.update(total_time)
 
+                if args.time is not None:
+                    train_time += time_meter.val
                 if itr % args.log_freq == 0:
                     log_message = (
                         "Iter {:04d} | Time {:.4f}({:.4f}) | Bit/dim {:.4f}({:.4f}) | "
@@ -432,6 +438,8 @@ if __name__ == "__main__":
                         log_message += " | acc2: {:.4E}".format(lacc)
                     if regularization_coeffs:
                         log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
+                    if args.time is not None:
+                        log_message += " | Total time: {:.2f}".format(train_time)
                     logger.info(log_message)
 
                 itr += 1
@@ -452,6 +460,8 @@ if __name__ == "__main__":
 
                 loss = np.mean(losses)
                 logger.info("Epoch {:04d} | Time {:.4f}, Bit/dim {:.4f}".format(epoch, time.time() - start, loss))
+                if args.time is not None:
+                    train_time += time.time() - start
                 #if loss < best_loss:
                 #    best_loss = loss
                 if not args.evaluate:
@@ -468,3 +478,10 @@ if __name__ == "__main__":
             utils.makedirs(os.path.dirname(fig_filename))
             generated_samples = model(fixed_z, reverse=True)[0].view(-1, *data_shape)
             save_image(generated_samples, fig_filename, nrow=10)
+
+        if args.time is not None and train_time > args.time:
+            if not os.path.isfile(os.path.join(args.save, 'checkpt-time-limited.pth')):
+                copy(os.path.join(args.save, 'checkpt.pth'), os.path.join(args.save, 'checkpt-time-limited.pth'))
+            logger.info("finish training because total training time {} exceeds {}".format(train_time, args.time))
+            break
+
