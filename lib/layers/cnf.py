@@ -8,6 +8,8 @@ from .wrappers.cnf_regularization import RegularizedODEfunc
 
 __all__ = ["CNF"]
 
+        
+
 def sample_unique(num_steps):
     rnd = torch.cat([torch.tensor([0.0]), torch.rand(num_steps).sort()[0], torch.tensor([1.0])])
     while torch.any(rnd[:-1] == rnd[1:]):
@@ -109,7 +111,7 @@ class CNF(nn.Module):
         )
 
         z_t = state_t[0]
-        time_length = integration_times[-1] - integration_times[0]
+
         samples = None
         for t, z in zip(integration_times[1:-1], z_t[1:-1]):
             output = self.odefunc._forward(t, z, output_div = logpz is not None, output_acc = lacc is not None)[1:]
@@ -118,7 +120,7 @@ class CNF(nn.Module):
             for i in range(len(output)):
                 samples[i].append(output[i])
         for i in range(len(samples)):
-            samples[i] = torch.stack(samples[i]).mean(0)*time_length
+            samples[i] = torch.stack(samples[i]).mean(0)*end_time
         ret = (z_t[-1],) + self._add([logpz, lacc], samples)
         return ret
 

@@ -134,7 +134,12 @@ parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False
 parser.add_argument('--model_path', type=str, default='')
 parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
 parser.add_argument('--retrain', type=eval, default=False, choices=[True, False])
+parser.add_argument("--retrain_warmup", type=int, default=0)
 parser.add_argument('--start_epoch', type=int, default=1)
+parser.add_argument('--optim', type=str, default="adam", choices=["adamax", "adam"])
+parser.add_argument('--optim_beta', type=float, default=0.999)
+parser.add_argument('--optim_eps', type=float, default=1e-8)
+parser.add_argument('--no_early', action="store_true")
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -248,7 +253,7 @@ def run(args, kwargs):
                     dec_sd[k] = v
             model.load_state_dict(dec_sd, strict=False)
         if args.retrain:
-            model = torch.load(args.model_path)
+            model.load_state_dict(torch.load(args.model_path).state_dict())
 
         if args.cuda:
             logger.info("Model on GPU")
@@ -266,9 +271,11 @@ def run(args, kwargs):
         else:
             parameters = model.parameters()
 
-        optimizer = optim.Adam(parameters, lr=args.learning_rate, betas=(0.9, 0.95))
-        #optimizer = optim.Adam(parameters, lr=args.learning_rate)
-        #optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
+        if args.optim == "adam":
+            optimizer = optim.Adam(parameters, lr=args.learning_rate, betas=(0.9, args.optim_beta), eps=args.optim_eps)
+        elif args.optim == "adamax":
+            optimizer = optim.Adamax(parameters, lr=args.learning_rate, betas=(0.9, args.optim_beta), eps=args.optim_eps)
+
         if args.retrain:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = 0
@@ -299,34 +306,34 @@ def run(args, kwargs):
 
             val_loss.append(v_loss)
 
-            if args.retrain and epoch == args.start_epoch + 1:
+            e += 1
+            if args.retrain and epoch <= args.start_epoch + args.retrain_warmup:
                 for param_group in optimizer.param_groups:
-                    param_group["lr"] = args.learning_rate
+                    param_group["lr"] = args.learning_rate *((epoch-args.start_epoch+1)/(args.retrain_warmup+1))
+                e = 0
             # early-stopping
             if v_loss < best_loss:
-                e = 0
+                if not args.no_early:
+                    e = 0
                 best_loss = v_loss
                 if args.input_type != 'binary':
                     best_bpd = v_bpd
                 logger.info('->model saved<-')
                 torch.save(model, snap_dir + args.flow + '.model')
-                # torch.save(model, snap_dir + args.flow + '_' + args.architecture + '.model')
 
-            elif (args.early_stopping_epochs > 0) and (epoch >= args.warmup):
-                e += 1
-                if e > args.early_stopping_epochs:
-                    if lr_decay in (0,1):
-                        final_model = torch.load(snap_dir + args.flow + '.model')
-                        model.load_state_dict(final_model.state_dict())
-                        final_model = None
-                        lr = args.learning_rate / 10**(lr_decay +1)
-                        e = 0
-                    else:
-                        break
+            if (args.early_stopping_epochs > 0) and (e>args.early_stopping_epochs) and (epoch >= args.warmup):
+                if lr_decay in (0,1):
+                    final_model = torch.load(snap_dir + args.flow + '.model')
+                    model.load_state_dict(final_model.state_dict())
+                    final_model = None
+                    lr = args.learning_rate / 10**(lr_decay +1)
+                    e = 0
+                else:
+                    break
 
-                    for param_group in optimizer.param_groups:
-                        param_group["lr"] = lr
-                    lr_decay += 1
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = lr
+                lr_decay += 1
 
             if args.input_type == 'binary':
                 logger.info(

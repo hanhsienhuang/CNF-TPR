@@ -96,6 +96,7 @@ parser.add_argument("--save", type=str, default="experiments/cnf")
 parser.add_argument("--val_freq", type=int, default=1)
 parser.add_argument("--log_freq", type=int, default=10)
 parser.add_argument("--evaluate", action= "store_true")
+parser.add_argument("--adam_beta", type=float, default=0.999)
 
 args = parser.parse_args()
 
@@ -345,8 +346,7 @@ if __name__ == "__main__":
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     # optimizer
-    #optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, args.adam_beta))
 
     # restore parameters
     if args.resume is not None:

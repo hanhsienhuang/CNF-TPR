@@ -64,6 +64,7 @@ parser.add_argument('--num_sample', type=int, default=None, help="Number of samp
 parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 parser.add_argument('--time', type=float, default=None, help="Total time of training")
+parser.add_argument("--adam_beta", type=float, default=0.999)
 
 parser.add_argument('--resume', type=str, default=None)
 parser.add_argument('--save', type=str, default='experiments/cnf')
@@ -190,8 +191,7 @@ if __name__ == '__main__':
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     if not args.evaluate:
-        #optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95))
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, args.adam_beta))
 
         time_meter = utils.RunningAverageMeter(0.98)
         loss_meter = utils.RunningAverageMeter(0.98)
