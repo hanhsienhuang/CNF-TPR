@@ -1,9 +1,8 @@
-# Accelerating Continuous Normalizing Flows with Acceleration Penalty
+# Accelerating Continuous Normalizing Flows
 
 ## Prerequisites
 
 * [pytorch](https://pytorch.org/)
-* [torchdiffeq](https://github.com/rtqichen/torchdiffeq): Package of numerical ODE solver.
 
 ## Datasets
 
