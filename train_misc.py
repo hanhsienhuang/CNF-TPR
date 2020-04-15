@@ -181,7 +181,8 @@ def build_model_tabular(args, dims, regularization_fns=None):
             T=args.time_length,
             train_T=args.train_T,
             solver=args.solver,
-            num_sample=args.num_sample,
+            poly_num_sample=args.poly_num_sample,
+            poly_order=args.poly_order,
             adjoint=args.adjoint,
         )
         return cnf

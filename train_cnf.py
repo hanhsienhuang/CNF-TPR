@@ -79,8 +79,9 @@ parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/d
 parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
-parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
-parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
+parser.add_argument('--poly_coef', type=float, default=None, help="Coefficient of polynomial regression loss")
+parser.add_argument('--poly_num_sample', type=int, default=0, help="Number of samples of t for polynomial regression loss")
+parser.add_argument('--poly_order', type=int, default=0, help="Order of polynomial regression loss")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 parser.add_argument('--time', type=float, default=None, help="Total time of training")
 
@@ -226,22 +227,22 @@ def get_dataset(args):
 
 def compute_bits_per_dim(x, model):
     zero = torch.zeros(x.shape[0], 1).to(x)
-    lacc = None if (args.coef_acc is None or not model.training) else torch.tensor(0.0).to(x)
+    lec = None if (args.poly_coef is None or not model.training) else torch.tensor(0.0).to(x)
 
     # Don't use data parallelize if batch size is small.
     # if x.shape[0] < 200:
     #     model = model.module
 
-    z, delta_logp, lacc = model(x, zero, lacc)
+    z, delta_logp, lec = model(x, zero, lec)
 
     logpz = standard_normal_logprob(z).view(z.shape[0], -1).sum(1, keepdim=True)  # logp(z)
     logpx = logpz - delta_logp
 
     logpx_per_dim = torch.sum(logpx) / x.nelement()  # averaged over batches
     bits_per_dim = -(logpx_per_dim - np.log(256)) / np.log(2)
-    lacc = lacc / (x[0].nelement() * np.log(2)) if lacc else None
+    lec = lec / (x[0].nelement() * np.log(2)) if lec else None
 
-    return bits_per_dim, lacc
+    return bits_per_dim, lec
 
 
 def create_model(args, data_shape, regularization_fns):
@@ -255,7 +256,11 @@ def create_model(args, data_shape, regularization_fns):
             intermediate_dims=hidden_dims,
             nonlinearity=args.nonlinearity,
             alpha=args.alpha,
-            cnf_kwargs={"T": args.time_length, "train_T": args.train_T, "num_sample": args.num_sample, "adjoint": args.adjoint},
+            cnf_kwargs={"T": args.time_length,
+                "train_T": args.train_T,
+                "adjoint": args.adjoint,
+                "poly_num_sample": args.poly_num_sample,
+                "poly_order": args.poly_order},
         )
     elif args.parallel:
         model = multiscale_parallel.MultiscaleParallelCNF(
@@ -394,7 +399,7 @@ if __name__ == "__main__":
                 # cast data and move to device
                 x = cvt(x)
                 # compute loss
-                loss, lacc = compute_bits_per_dim(x, model)
+                loss, lec = compute_bits_per_dim(x, model)
                 if regularization_coeffs:
                     reg_states = get_regularization(model, regularization_coeffs)
                     reg_loss = sum(
@@ -403,8 +408,8 @@ if __name__ == "__main__":
                     loss = loss + reg_loss
                 total_time = count_total_time(model)
                 loss = loss + total_time * args.time_penalty
-                if args.coef_acc is not None:
-                    loss = loss + args.coef_acc * lacc
+                if args.poly_coef is not None:
+                    loss = loss + args.poly_coef * lec
 
                 nfe_forward = count_nfe(model)
                 loss.backward()
@@ -434,8 +439,8 @@ if __name__ == "__main__":
                             grad_meter.val, grad_meter.avg, tt_meter.val, tt_meter.avg
                         )
                     )
-                    if args.coef_acc is not None:
-                        log_message += " | acc2: {:.4E}".format(lacc)
+                    if args.poly_coef is not None:
+                        log_message += " | acc2: {:.4E}".format(lec)
                     if regularization_coeffs:
                         log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
                     if args.time is not None:

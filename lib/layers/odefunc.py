@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from . import diffeq_layers
 from .squeeze import squeeze, unsqueeze
-from .diffeq_layers import forward_ad
 
 __all__ = ["ODEnet", "AutoencoderDiffEqNet", "ODEfunc", "AutoencoderODEfunc"]
 
@@ -146,7 +145,7 @@ class ODEnet(nn.Module):
 
             layer = base_layer(hidden_shape[0], dim_out, **layer_kwargs)
             layers.append(layer)
-            activation_fns.append(forward_ad.Activation(NONLINEARITIES[nonlinearity]))
+            activation_fns.append(NONLINEARITIES[nonlinearity])
 
             hidden_shape = list(copy.copy(hidden_shape))
             hidden_shape[0] = dim_out
@@ -172,16 +171,6 @@ class ODEnet(nn.Module):
         for _ in range(self.num_squeeze):
             dx = unsqueeze(dx, 2)
         return dx
-
-    def forward_AD(self, dt_dt, dx_dt):
-        dv_dt = dx_dt
-        for l, layer in enumerate(self.layers):
-            dv_dt = layer.forward_AD(dt_dt, dv_dt)
-
-            # if not last layer, use nonlinearity
-            if l < len(self.layers) - 1:
-                dv_dt = self.activation_fns[l].forward_AD(dv_dt)
-        return dv_dt
 
 
 class AutoencoderDiffEqNet(nn.Module):
@@ -273,8 +262,6 @@ class ODEfunc(nn.Module):
         self.diffeq = diffeq
         self.residual = residual
         self.rademacher = rademacher
-        self.output_div = False
-        self.output_acc = False
 
         if divergence_fn == "brute_force":
             self.divergence_fn = divergence_bf
@@ -283,55 +270,37 @@ class ODEfunc(nn.Module):
 
         self.register_buffer("_num_evals", torch.tensor(0.))
 
-    def before_odeint(self, e=None, output_div=True, output_acc=False):
+    def before_odeint(self, e=None):
         self._e = e
         self._num_evals.fill_(0)
-        self.output_div = output_div
-        self.output_acc = output_acc
 
     def forward(self, t, states):
         y = states[0]
 
         # convert to tensor
         t = torch.tensor(t).type_as(y)
-        num_vars = 1 + sum([self.output_div, self.output_acc])
-        outputs = self._forward(t, y, self.output_div, self.output_acc, additional = states[num_vars:])
-        return tuple(outputs + [torch.zeros_like(s_).requires_grad_(True) for s_ in states[len(outputs):]])
+        self._num_evals += 2
+        batchsize = y.shape[0]
 
-
-    def _forward(self, t, y, output_div, output_acc, additional = ()):
-        outputs = []
+        if self._e is None:
+            if self.rademacher:
+                self._e = sample_rademacher_like(y)
+            else:
+                self._e = sample_gaussian_like(y)
         with torch.set_grad_enabled(True):
             y.requires_grad_(True)
             t.requires_grad_(True)
-            v = self.diffeq(t, y, *additional)
-            self._num_evals += 1
-            outputs.append(v)
-            batchsize = y.shape[0]
-            if output_div:
-                if self._e is None:
-                    if self.rademacher:
-                        self._e = sample_rademacher_like(y)
-                    else:
-                        self._e = sample_gaussian_like(y)
+            v = self.diffeq(t, y, *states[2:])
 
-                # Hack for 2D data to use brute force divergence computation.
-                if not self.training and y.view(y.shape[0], -1).shape[1] == 2:
-                    divergence = divergence_bf(v, y, training = self.training).view(batchsize, 1)
-                else:
-                    divergence = self.divergence_fn(v, y, e=self._e, training = self.training).view(batchsize, 1)
-                outputs.append(-divergence)
-                self._num_evals += 1
+            # Hack for 2D data to use brute force divergence computation.
+            if not self.training and y.view(y.shape[0], -1).shape[1] == 2:
+                divergence = divergence_bf(v, y, training = self.training).view(batchsize, 1)
+            else:
+                divergence = self.divergence_fn(v, y, e=self._e, training = self.training).view(batchsize, 1)
 
-            if output_acc:
-                dt_dt = torch.tensor(1.0).to(y)
-                dy_dt = v
-                dv_dt = self.diffeq.forward_AD(dt_dt, dy_dt)
-                acc = torch.sum(dv_dt**2)/batchsize
-                outputs.append(acc)
-                self._num_evals += 1
+        return tuple([v, -divergence] + [torch.zeros_like(s_).requires_grad_(True) for s_ in states[2:]])
 
-        return outputs
+
         
 
 

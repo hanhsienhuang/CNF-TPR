@@ -60,8 +60,9 @@ parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx|
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
 
-parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
-parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
+parser.add_argument('--poly_coef', type=float, default=None, help="Coefficient of polynomial regression loss")
+parser.add_argument('--poly_num_sample', type=int, default=0, help="Number of samples of t for polynomial regression loss")
+parser.add_argument('--poly_order', type=int, default=0, help="Order of polynomial regression loss")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 parser.add_argument('--time', type=float, default=None, help="Total time of training")
 parser.add_argument("--adam_beta", type=float, default=0.999)
@@ -139,14 +140,14 @@ def load_data(name):
 
 def compute_loss(x, model):
     zero = torch.zeros(x.shape[0], 1).to(x)
-    lacc = None if (args.coef_acc is None or not model.training) else torch.tensor(0.0).to(x)
+    lec = None if (args.poly_coef is None or not model.training) else torch.tensor(0.0).to(x)
 
-    z, delta_logp, lacc = model(x, zero, lacc)
+    z, delta_logp, lec = model(x, zero, lec)
 
     logpz = standard_normal_logprob(z).view(z.shape[0], -1).sum(1, keepdim=True)  # logp(z)
     logpx = logpz - delta_logp
     loss = -torch.mean(logpx)
-    return loss, lacc
+    return loss, lec
 
 
 def restore_model(model, filename):
@@ -216,7 +217,7 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
 
                 x = cvt(x)
-                loss, lacc = compute_loss(x, model)
+                loss, lec = compute_loss(x, model)
                 loss_meter.update(loss.item())
 
                 if len(regularization_coeffs) > 0:
@@ -229,8 +230,8 @@ if __name__ == '__main__':
                 total_time = count_total_time(model)
                 nfe_forward = count_nfe(model)
 
-                if args.coef_acc is not None:
-                    loss = loss + args.coef_acc * lacc
+                if args.poly_coef is not None:
+                    loss = loss + args.poly_coef * lec
 
                 loss.backward()
                 optimizer.step()
@@ -255,8 +256,8 @@ if __name__ == '__main__':
                             nfeb_meter.avg, tt_meter.val, tt_meter.avg
                         )
                     )
-                    if args.coef_acc is not None:
-                        log_message += " | acc2: {:.4E}".format(lacc)
+                    if args.poly_coef is not None:
+                        log_message += " | acc2: {:.4E}".format(lec)
                     if args.time is not None:
                         log_message += " | Total time: {:.2f}".format(train_time)
 

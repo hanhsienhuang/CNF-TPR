@@ -67,8 +67,9 @@ parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/d
 parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
 parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
-parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
-parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
+parser.add_argument('--poly_coef', type=float, default=None, help="Coefficient of polynomial regression loss")
+parser.add_argument('--poly_num_sample', type=int, default=0, help="Number of samples of t for polynomial regression loss")
+parser.add_argument('--poly_order', type=int, default=0, help="Order of polynomial regression loss")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 
 parser.add_argument('--save', type=str, default='experiments/cnf')
@@ -115,17 +116,17 @@ def compute_loss(args, model, batch_size=None):
     x = toy_data.inf_train_gen(args.data, batch_size=batch_size)
     x = torch.from_numpy(x).type(torch.float32).to(device)
     zero = torch.zeros(x.shape[0], 1).to(x)
-    lacc = None if (args.coef_acc is None or not model.training) else torch.tensor(0.0).to(x)
+    lec = None if (args.poly_coef is None or not model.training) else torch.tensor(0.0).to(x)
 
     # transform to z
-    z, delta_logp, lacc = model(x, zero, lacc)
+    z, delta_logp, lec = model(x, zero, lec)
 
     # compute log q(z)
     logpz = standard_normal_logprob(z).sum(1, keepdim=True)
 
     logpx = logpz - delta_logp
     loss = -torch.mean(logpx)
-    return loss, lacc
+    return loss, lec
 
 
 if __name__ == '__main__':
@@ -153,7 +154,7 @@ if __name__ == '__main__':
         optimizer.zero_grad()
         if args.spectral_norm: spectral_norm_power_iteration(model, 1)
 
-        loss, lacc = compute_loss(args, model)
+        loss, lec = compute_loss(args, model)
         loss_meter.update(loss.item())
 
         if len(regularization_coeffs) > 0:
@@ -166,8 +167,8 @@ if __name__ == '__main__':
         total_time = count_total_time(model)
         nfe_forward = count_nfe(model)
 
-        if args.coef_acc is not None:
-            loss = loss + args.coef_acc * lacc
+        if args.poly_coef is not None:
+            loss = loss + args.poly_coef * lec
 
         loss.backward()
         optimizer.step()
@@ -187,8 +188,8 @@ if __name__ == '__main__':
                 nfeb_meter.val, nfeb_meter.avg, tt_meter.val, tt_meter.avg
             )
         )
-        if args.coef_acc is not None:
-            log_message += " | acc2: {:.4E}".format(lacc)
+        if args.poly_coef is not None:
+            log_message += " | poly loss: {:.4E}".format(lec)
 
         if len(regularization_coeffs) > 0:
             log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
