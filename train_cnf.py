@@ -440,7 +440,7 @@ if __name__ == "__main__":
                         )
                     )
                     if args.poly_coef is not None:
-                        log_message += " | acc2: {:.4E}".format(lec)
+                        log_message += " | poly loss: {:.4E}".format(lec)
                     if regularization_coeffs:
                         log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
                     if args.time is not None:

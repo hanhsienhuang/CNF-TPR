@@ -4,12 +4,11 @@ from train_misc import build_model_tabular
 import lib.layers as layers
 from .VAE import VAE
 import lib.layers.diffeq_layers as diffeq_layers
-from lib.layers.diffeq_layers import forward_ad
 from lib.layers.odefunc import NONLINEARITIES
 from lib.layers.cnf import sample_unique
-from train_misc import create_regularization_fns
+from lib.layers.cnf import poly_reg_error
 
-from lib.layers.torchdiffeq import odeint_adjoint as odeint
+from torchdiffeq import odeint_adjoint as odeint
 
 
 def get_hidden_dims(args):
@@ -131,7 +130,7 @@ class AmortizedLowRankODEnet(nn.Module):
         for dim_out in hidden_dims:
             layer = base_layer(hidden_shape, dim_out)
             layers.append(layer)
-            activation_fns.append(forward_ad.Activation(NONLINEARITIES[nonlinearity]))
+            activation_fns.append(NONLINEARITIES[nonlinearity])
             hidden_shape = dim_out
 
         self.layers = nn.ModuleList(layers)
@@ -142,43 +141,24 @@ class AmortizedLowRankODEnet(nn.Module):
         return [params]
 
     def _rank_k_bmm(self, x, u, v):
-        xu = torch.bmm(x[:, None], u)
-        xuv = torch.bmm(xu, v)
+        xu = torch.bmm(x[:, None], u.view(x.shape[0], x.shape[-1], self.rank))
+        xuv = torch.bmm(xu, v.view(x.shape[0], self.rank, -1))
         return xuv[:, 0]
-
-    def _prepare_params(self, am_params):
-        self.am_params = []
-        for in_dim, out_dim in zip(self.input_dims, self.output_dims):
-            this_u, am_params = am_params[:, :in_dim * self.rank], am_params[:, in_dim * self.rank:]
-            this_v, am_params = am_params[:, :out_dim * self.rank], am_params[:, out_dim * self.rank:]
-            this_bias, am_params = am_params[:, :out_dim], am_params[:, out_dim:]
-            this_u = this_u.view(-1, in_dim, self.rank)
-            this_v = this_v.view(-1, self.rank, out_dim)
-            self.am_params.append( (this_u, this_v, this_bias))
 
     def forward(self, t, y, am_params):
         dx = y
-        self._prepare_params(am_params)
-        for l, (layer, (u,v,bias)) in enumerate(zip(self.layers, self.am_params)):
+        for l, (layer, in_dim, out_dim) in enumerate(zip(self.layers, self.input_dims, self.output_dims)):
+            this_u, am_params = am_params[:, :in_dim * self.rank], am_params[:, in_dim * self.rank:]
+            this_v, am_params = am_params[:, :out_dim * self.rank], am_params[:, out_dim * self.rank:]
+            this_bias, am_params = am_params[:, :out_dim], am_params[:, out_dim:]
+
             xw = layer(t, dx)
-            xw_am = self._rank_k_bmm(dx, u, v)
-            dx = xw + xw_am + bias
+            xw_am = self._rank_k_bmm(dx, this_u, this_v)
+            dx = xw + xw_am + this_bias
             # if not last layer, use nonlinearity
             if l < len(self.layers) - 1:
                 dx = self.activation_fns[l](dx)
         return dx
-
-    def forward_AD(self, dt_dt, dy_dt):
-        dv_dt = dy_dt
-        for l, (layer, (u,v,bias)) in enumerate(zip(self.layers, self.am_params)):
-            dvw = layer.forward_AD(dt_dt, dv_dt)
-            dvw_am = self._rank_k_bmm(dv_dt, u, v)
-            dv_dt = dvw + dvw_am 
-            # if not last layer, use nonlinearity
-            if l < len(self.layers) - 1:
-                dv_dt = self.activation_fns[l].forward_AD(dv_dt)
-        self.am_params = None
-        return dv_dt
 
 
 class HyperODEnet(nn.Module):
@@ -350,8 +330,9 @@ class AmortizedCNFVAE(VAE):
         self.atol = args.atol
         self.rtol = args.rtol
         self.solver = args.solver
-        self.num_sample = args.num_sample
-        self.coef_acc = args.coef_acc
+        self.apply_poly_loss = args.poly_coef is not None
+        self.poly_num_sample = args.poly_num_sample
+        self.poly_order = args.poly_order
 
 
     def encode(self, x):
@@ -369,78 +350,39 @@ class AmortizedCNFVAE(VAE):
 
     def forward(self, x):
 
-        self.log_det_j = 0.
-
         z_mu, z_var, am_params = self.encode(x)
 
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
 
-        if self.training and self.num_sample is not None:
-            z, delta_logp, lacc = self.sample(z0, am_params)
-        else:
-            z, delta_logp, lacc = self.solve(z0, am_params)
-
-        x_mean = self.decode(z)
-        return x_mean, z_mu, z_var, -delta_logp.view(-1), z0, z, lacc
-
-    def sample(self, z0, am_params):
-        need_acc = self.coef_acc is not None
+        delta_logp = torch.zeros(x.shape[0], 1).to(x)
         z = z0
-        laccs = []
-        dlogps = []
+        if self.training and self.apply_poly_loss:
+            lec = 0
+        else:
+            integration_times = torch.tensor([0.0, self.time_length]).to(z0)
+            lec = None
+
         for odefunc, am_param in zip(self.odefuncs, am_params):
-            integration_times = sample_unique(self.num_sample).to(z0) * self.time_length
+            if lec is not None:
+                integration_times = sample_unique(self.poly_num_sample).to(z0) * self.time_length
             am_param_unpacked = odefunc.diffeq._unpack_params(am_param)
-            odefunc.before_odeint(output_div=False, output_acc=False)
+            odefunc.before_odeint()
             states = odeint(
                 odefunc,
-                (z,) + tuple(am_param_unpacked),
+                (z, delta_logp) + tuple(am_param_unpacked),
                 integration_times,
                 atol=self.atol,
                 rtol=self.rtol,
                 method=self.solver,
             )
-            z_t = states[0]
-            z = z_t[-1]
+            z, delta_logp = states[0][-1], states[1][-1]
 
-            time_length = integration_times[-1] - integration_times[0]
-            samples = None
-            for t, z in zip(integration_times[1:-1], z_t[1:-1]):
-                output = odefunc._forward(t, z, output_div = True, output_acc = need_acc, additional = am_param_unpacked)[1:]
-                if not samples:
-                    samples = [[] for i in range(len(output))]
-                for i in range(len(output)):
-                    samples[i].append(output[i])
-            for i in range(len(samples)):
-                samples[i] = torch.stack(samples[i]).mean(0)*time_length
-            dlogps.append(samples[0])
-            if need_acc:
-                laccs.append(samples[1])
-        return z, sum(dlogps), sum(laccs) if need_acc else None
+            if lec is not None:
+                lec = lec + poly_reg_error(integration_times, states[0], self.poly_order)
+        x_mean = self.decode(z)
 
-    def solve(self, z0, am_params):
-        need_acc = self.training and self.coef_acc is not None
-        integration_times = torch.tensor([0.0, self.time_length]).to(z0)
-        states = (z0, torch.zeros(z0.shape[0], 1).to(z0)) 
-        num_vars = 2
-        if need_acc:
-            states += (torch.tensor(0.0).to(z0), )
-            num_vars += 1
-
-        for odefunc, am_param in zip(self.odefuncs, am_params):
-            am_param_unpacked = odefunc.diffeq._unpack_params(am_param)
-            odefunc.before_odeint(output_div=True, output_acc=need_acc)
-            states = odeint(
-                odefunc,
-                states + tuple(am_param_unpacked),
-                integration_times,
-                atol=self.atol,
-                rtol=self.rtol,
-                method=self.solver,
-            )
-            states = tuple(state[-1] for state in states[:num_vars])
-        return states[:2] + (states[2] if need_acc else None,)
+        return x_mean, z_mu, z_var, -delta_logp.view(-1), z0, z, lec
 
 
 class AmortizedBiasCNFVAE(AmortizedCNFVAE):

@@ -127,8 +127,9 @@ parser.add_argument('--rademacher', type=eval, default=False, choices=[True, Fal
 parser.add_argument('--batch_norm', type=eval, default=False, choices=[True, False])
 parser.add_argument('--bn_lag', type=float, default=0)
 
-parser.add_argument('--num_sample', type=int, default=None, help="Number of samples for Monte Carlo integration (None for no Monte Carlo)")
-parser.add_argument('--coef_acc', type=float, default=None, help="Coefficient of loss of first order derivative")
+parser.add_argument('--poly_coef', type=float, default=None, help="Coefficient of polynomial regression loss")
+parser.add_argument('--poly_num_sample', type=int, default=0, help="Number of samples of t for polynomial regression loss")
+parser.add_argument('--poly_order', type=int, default=0, help="Order of polynomial regression loss")
 # evaluation
 parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
 parser.add_argument('--model_path', type=str, default='')

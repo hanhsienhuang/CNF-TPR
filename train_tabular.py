@@ -257,7 +257,7 @@ if __name__ == '__main__':
                         )
                     )
                     if args.poly_coef is not None:
-                        log_message += " | acc2: {:.4E}".format(lec)
+                        log_message += " | poly loss: {:.4E}".format(lec)
                     if args.time is not None:
                         log_message += " | Total time: {:.2f}".format(train_time)
 
