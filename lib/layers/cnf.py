@@ -26,10 +26,10 @@ def poly_reg_error(t, z, order):
     G = torch.stack(T, -1)
     U = torch.svd(G)[0]
     mat = torch.eye(t.shape[0]).to(t) - U[:,:order+1]@U.t()[:order+1]
-    return torch.sum(torch.einsum("ij,j...->i...", mat, z)**2)/t.shape[0]
+    return torch.sum(torch.einsum("ij,j...->i...", mat, z)**2)/t.shape[0]/z.shape[1]
 
 class CNF(nn.Module):
-    def __init__(self, odefunc, T=1.0, train_T=False, solver='dopri5', atol=1e-5, rtol=1e-5, poly_num_sample=0, poly_order=0, adjoint=True):
+    def __init__(self, odefunc, T=1.0, train_T=False, solver='dopri5', atol=1e-5, rtol=1e-5, test_atol=None, test_rtol=None, poly_num_sample=0, poly_order=0, adjoint=True):
         super(CNF, self).__init__()
         if train_T:
             self.register_parameter("sqrt_end_time", nn.Parameter(torch.sqrt(torch.tensor(T))))
@@ -41,8 +41,8 @@ class CNF(nn.Module):
         self.atol = atol
         self.rtol = rtol
         self.test_solver = solver
-        self.test_atol = atol
-        self.test_rtol = rtol
+        self.test_atol = test_atol if test_atol else atol
+        self.test_rtol = test_rtol if test_rtol else rtol
         assert poly_num_sample >= poly_order
         self.poly_num_sample = poly_num_sample
         self.poly_order = poly_order

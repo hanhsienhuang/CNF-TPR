@@ -65,7 +65,9 @@ parser.add_argument('--poly_num_sample', type=int, default=0, help="Number of sa
 parser.add_argument('--poly_order', type=int, default=0, help="Order of polynomial regression loss")
 parser.add_argument('--adjoint', action='store_true', help="Using adjoint methods")
 parser.add_argument('--time', type=float, default=None, help="Total time of training")
+parser.add_argument("--optim", choices=["adam", "adamax"], default="adam")
 parser.add_argument("--adam_beta", type=float, default=0.999)
+parser.add_argument("--adam_eps", type=float, default=1e-8)
 
 parser.add_argument('--resume', type=str, default=None)
 parser.add_argument('--save', type=str, default='experiments/cnf')
@@ -192,7 +194,8 @@ if __name__ == '__main__':
     logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
 
     if not args.evaluate:
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, args.adam_beta))
+        optim_fn = torch.optim.Adam if args.optim == "adam" else torch.optim.Adamax
+        optimizer = optim_fn(model.parameters(), lr=args.lr, betas=(0.9, args.adam_beta), eps=args.adam_eps)
 
         time_meter = utils.RunningAverageMeter(0.98)
         loss_meter = utils.RunningAverageMeter(0.98)

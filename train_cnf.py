@@ -52,7 +52,7 @@ parser.add_argument("--alpha", type=float, default=1e-6)
 parser.add_argument('--time_length', type=float, default=1.0)
 parser.add_argument('--train_T', type=eval, default=False)
 
-parser.add_argument("--num_epochs", type=int, default=450)
+parser.add_argument("--num_epochs", type=int, default=250)
 parser.add_argument("--batch_size", type=int, default=200)
 parser.add_argument(
     "--batch_size_schedule", type=str, default="", help="Increases the batchsize at every given epoch, dash separated."
@@ -126,10 +126,10 @@ def add_noise(x):
 def update_lr(optimizer, itr, epoch):
     iter_frac = min(float(itr + 1) / max(args.warmup_iters, 1), 1.0)
     lr = args.lr * iter_frac
-    if epoch > 400:
+    if epoch > 200:
         args.evaluate=True
         lr = 0
-    elif epoch > 200:
+    elif epoch > 100:
         lr = args.lr/10
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr

@@ -329,6 +329,8 @@ class AmortizedCNFVAE(VAE):
 
         self.atol = args.atol
         self.rtol = args.rtol
+        self.test_atol = args.test_atol if args.test_atol is not None else args.atol
+        self.test_rtol = args.test_rtol if args.test_rtol is not None else args.rtol
         self.solver = args.solver
         self.apply_poly_loss = args.poly_coef is not None
         self.poly_num_sample = args.poly_num_sample
@@ -372,8 +374,8 @@ class AmortizedCNFVAE(VAE):
                 odefunc,
                 (z, delta_logp) + tuple(am_param_unpacked),
                 integration_times,
-                atol=self.atol,
-                rtol=self.rtol,
+                atol=self.atol if self.training else self.test_atol,
+                rtol=self.rtol if self.training else self.test_rtol,
                 method=self.solver,
             )
             z, delta_logp = states[0][-1], states[1][-1]
