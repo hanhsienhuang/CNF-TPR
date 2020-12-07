@@ -1,4 +1,4 @@
-# Accelerating Continuous Normalizing Flows
+# Accelerating Continuous Normalizing Flow with Trajectory Polynomial Regularization
 
 ## Prerequisites
 
